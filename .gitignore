@@ -1,0 +1,42 @@
+# Built application files
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Gradle / build
+.gradle/
+build/
+app/build/
+.kotlin/
+local.properties
+
+# Android Studio
+.idea/
+*.iml
+.DS_Store
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Firebase config (add your own locally)
+app/google-services.json
+
+# Personal / device screenshots
+Testing/
+**/Screenshot_*.jpg
+**/Screenshot_*.png
+screenshots/
+
+# Secrets
+*.keystore
+*.jks
+*.p12
+*.pem
+.env
+.env.*
+
+# Logs and temp files
+*.log
+*.txt
+!gradle/wrapper/gradle-wrapper.properties
