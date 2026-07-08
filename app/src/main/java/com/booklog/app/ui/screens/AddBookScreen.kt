@@ -51,7 +51,7 @@ fun AddBookScreen(
     viewModel: AddBookViewModel,
     activeReaderLabel: String = "Parent",
     onBack: () -> Unit,
-    onSaved: (Long, String) -> Unit,
+    onSaved: (com.booklog.app.data.local.Book) -> Unit,
     scannedIsbn: String? = null,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -66,7 +66,7 @@ fun AddBookScreen(
     LaunchedEffect(viewModel) {
         viewModel.events.collectLatest { event ->
             when (event) {
-                is AddBookEvent.BookSaved -> onSaved(event.id, event.title)
+                is AddBookEvent.BookSaved -> onSaved(event.book)
             }
         }
     }

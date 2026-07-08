@@ -10,6 +10,7 @@ import com.booklog.app.data.repository.BookRepository
 import com.booklog.app.data.repository.KidProfileRepository
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.auth.UserProfileChangeRequest
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
@@ -46,6 +47,15 @@ class CloudRepository(
 
     suspend fun signIn(email: String, password: String): Result<Unit> = runCatching {
         auth.signInWithEmailAndPassword(email.trim(), password).await()
+        syncLocalBooksToCloud()
+    }.map { }
+
+    suspend fun signInWithGoogle(idToken: String): Result<Unit> = runCatching {
+        val credential = GoogleAuthProvider.getCredential(idToken, null)
+        val result = auth.signInWithCredential(credential).await()
+        val user = result.user ?: error("Google sign-in succeeded but user is missing")
+        val displayName = user.displayName?.trim().orEmpty().ifBlank { "Reader" }
+        ensureUserDocument(user, displayName)
         syncLocalBooksToCloud()
     }.map { }
 

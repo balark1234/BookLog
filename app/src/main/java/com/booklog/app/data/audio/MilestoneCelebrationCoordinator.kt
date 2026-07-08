@@ -17,12 +17,18 @@ class MilestoneCelebrationCoordinator(
         val logs = rewardRepository.getReadingLogs(kidProfileId)
         val redeemedCents = rewardRepository.getRedeemedCents(kidProfileId)
         val redemptionCount = rewardRepository.redemptionCount(kidProfileId)
+        val completions = rewardRepository.getCompletions(kidProfileId)
+        val earnedCents = rewardRepository.getEarnedCents(kidProfileId)
+        val balanceCents = rewardRepository.getBalanceCents(kidProfileId)
         val snapshot = ReadingSnapshotComputer.compute(
             books = books,
             readingLogs = logs,
             booksScanned = milestonePreferences.getBooksScanned(),
             totalRedeemedCents = redeemedCents,
             rewardRedemptions = redemptionCount,
+            completions = completions,
+            earnedCents = earnedCents,
+            availableBalanceCents = balanceCents,
         )
         audioManager.celebrateNewMilestones(MilestoneEngine.compute(snapshot))
     }

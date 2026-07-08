@@ -10,6 +10,7 @@ import com.booklog.app.data.local.Book
 import com.booklog.app.data.local.BookDatabase
 import com.booklog.app.data.milestones.MilestonePreferences
 import com.booklog.app.data.profiles.ActiveKidPreferences
+import com.booklog.app.data.profiles.GuestPreferences
 import com.booklog.app.data.repository.BookRepository
 import com.booklog.app.data.repository.KidProfileRepository
 import com.booklog.app.data.repository.RewardRepository
@@ -36,6 +37,9 @@ class BookLogApplication : Application() {
     lateinit var activeKidPreferences: ActiveKidPreferences
         private set
 
+    lateinit var guestPreferences: GuestPreferences
+        private set
+
     lateinit var rewardRepository: RewardRepository
         private set
 
@@ -56,10 +60,13 @@ class BookLogApplication : Application() {
         rewardRepository = RewardRepository(
             database.rewardTransactionDao(),
             database.readingDayLogDao(),
+            database.completedBookDao(),
+            database.bookDao(),
         )
         cloudRepository = CloudRepository(repository, kidProfileRepository)
         milestonePreferences = MilestonePreferences(this)
         activeKidPreferences = ActiveKidPreferences(this)
+        guestPreferences = GuestPreferences(this)
         audioPreferences = AudioPreferences(this)
         audioManager = AppAudioManager(
             context = this,

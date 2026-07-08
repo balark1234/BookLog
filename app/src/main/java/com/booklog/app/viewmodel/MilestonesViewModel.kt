@@ -15,11 +15,11 @@ import com.booklog.app.data.profiles.ActiveKidPreferences
 import com.booklog.app.data.repository.BookRepository
 import com.booklog.app.data.repository.RewardRepository
 import com.booklog.app.data.rewards.RewardPurchaseCategory
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -58,10 +58,21 @@ class MilestonesViewModel(
         RewardInputs(books, scans, kidId, redeem)
     }.flatMapLatest { inputs ->
         combine(
-            rewardRepository.observeTransactions(inputs.kidId),
-            rewardRepository.observeRedeemedCents(inputs.kidId),
-            rewardRepository.observeReadingLogs(inputs.kidId),
-        ) { transactions, redeemedCents, logs ->
+            combine(
+                rewardRepository.observeTransactions(inputs.kidId),
+                rewardRepository.observeRedeemedCents(inputs.kidId),
+                rewardRepository.observeReadingLogs(inputs.kidId),
+            ) { transactions, redeemedCents, logs ->
+                Triple(transactions, redeemedCents, logs)
+            },
+            combine(
+                rewardRepository.observeCompletions(inputs.kidId),
+                rewardRepository.observeEarnedCents(inputs.kidId),
+                rewardRepository.observeBalanceCents(inputs.kidId),
+            ) { completions, earnedCents, balanceCents ->
+                Triple(completions, earnedCents, balanceCents)
+            },
+        ) { (transactions, redeemedCents, logs), (completions, earnedCents, balanceCents) ->
             val profileBooks = inputs.books.filter { book ->
                 when (inputs.kidId) {
                     null -> book.kidProfileId == null
@@ -73,7 +84,12 @@ class MilestonesViewModel(
                 readingLogs = logs,
                 booksScanned = inputs.scans,
                 totalRedeemedCents = redeemedCents,
-                rewardRedemptions = transactions.size,
+                rewardRedemptions = transactions.count {
+                    it.transactionType == com.booklog.app.data.rewards.RewardTransactionType.DEBIT_REDEEMED.name
+                },
+                completions = completions,
+                earnedCents = earnedCents,
+                availableBalanceCents = balanceCents,
             )
             val milestones = MilestoneEngine.compute(snapshot)
             MilestonesUiState(
@@ -121,7 +137,6 @@ class MilestonesViewModel(
                 amountCents = amountCents,
                 category = category,
                 note = note,
-                availableBalanceCents = availableBalanceCents,
             ).onSuccess { transaction ->
                 redeemStatus.update {
                     it.copy(

@@ -33,13 +33,22 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import com.booklog.app.R
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.ApiException
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
@@ -52,6 +61,7 @@ import com.booklog.app.data.profiles.KidAgeCalculator
 import com.booklog.app.ui.components.KeyboardAwareScrollColumn
 import com.booklog.app.ui.theme.CoralPink
 import com.booklog.app.ui.theme.Lavender
+import com.booklog.app.ui.theme.MintGreen
 import com.booklog.app.ui.theme.SkyBlue
 import com.booklog.app.ui.theme.SunnyYellow
 import com.booklog.app.viewmodel.AuthViewModel
@@ -74,6 +84,31 @@ fun ProfileScreen(
     var displayName by rememberSaveable { mutableStateOf("") }
     var email by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
+    val context = LocalContext.current
+    val webClientId = stringResource(R.string.default_web_client_id)
+    val googleSignInClient = remember(webClientId) {
+        val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestIdToken(webClientId)
+            .requestEmail()
+            .build()
+        GoogleSignIn.getClient(context, gso)
+    }
+    val googleSignInLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        runCatching {
+            val account = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+                .getResult(ApiException::class.java)
+            val idToken = account.idToken
+            if (idToken != null) {
+                viewModel.signInWithGoogle(idToken)
+            } else {
+                viewModel.clearMessages()
+            }
+        }.onFailure {
+            viewModel.clearMessages()
+        }
+    }
 
     KeyboardAwareScrollColumn(
         contentPadding = PaddingValues(20.dp),
@@ -157,6 +192,26 @@ fun ProfileScreen(
             ) {
                 Text("Sign Out")
             }
+        } else if (state.isGuestMode) {
+            Card(
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = MintGreen.copy(alpha = 0.25f)),
+            ) {
+                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Guest mode", fontWeight = FontWeight.Bold)
+                    Text(
+                        "Your books stay on this device. Sign in anytime to sync and join global leaderboards.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+            OutlinedButton(
+                onClick = viewModel::exitGuestMode,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+            ) {
+                Text("Exit Guest Mode")
+            }
         } else {
             Text(
                 if (isSignUp) "Create your account" else "Welcome back!",
@@ -168,6 +223,31 @@ fun ProfileScreen(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+
+            if (state.isLoading) {
+                CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
+            } else {
+                OutlinedButton(
+                    onClick = {
+                        viewModel.clearMessages()
+                        viewModel.continueAsGuest()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Text("Continue as Guest")
+                }
+                OutlinedButton(
+                    onClick = {
+                        viewModel.clearMessages()
+                        googleSignInLauncher.launch(googleSignInClient.signInIntent)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Text("Continue with Google")
+                }
+            }
 
             if (isSignUp) {
                 OutlinedTextField(
@@ -194,9 +274,7 @@ fun ProfileScreen(
                 visualTransformation = PasswordVisualTransformation(),
             )
 
-            if (state.isLoading) {
-                CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
-            } else {
+            if (!state.isLoading) {
                 Button(
                     onClick = {
                         viewModel.clearMessages()
@@ -208,7 +286,7 @@ fun ProfileScreen(
                     shape = RoundedCornerShape(16.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                 ) {
-                    Text(if (isSignUp) "Create Account & Join Leaderboard" else "Sign In")
+                    Text(if (isSignUp) "Create Account & Join Leaderboard" else "Sign In with Email")
                 }
                 OutlinedButton(
                     onClick = { isSignUp = !isSignUp; viewModel.clearMessages() },

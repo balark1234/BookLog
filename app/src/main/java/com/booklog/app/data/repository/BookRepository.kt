@@ -76,20 +76,28 @@ class BookRepository(private val bookDao: BookDao) {
     }
     suspend fun saveBook(book: Book): Long {
         val withCover = book.copy(coverUrl = CoverUrlResolver.bestAvailable(book.isbn, book.coverUrl))
+        val isbn = withCover.isbn?.let { normalizeIsbn(it) }
+        if (!isbn.isNullOrBlank()) {
+            val existing = findLocalBookByIsbn(isbn, withCover.kidProfileId)
+            if (existing != null) return existing.id
+        }
         return bookDao.insert(withCover)
     }
-    suspend fun updateBook(book: Book) = bookDao.update(
-        book.copy(coverUrl = CoverUrlResolver.bestAvailable(book.isbn, book.coverUrl))
-    )
-    suspend fun deleteBook(book: Book) = bookDao.delete(book)
 
-    suspend fun lookupByIsbn(rawIsbn: String): Result<Book> {
+    suspend fun findLocalBookByIsbn(isbn: String, kidId: Long?): Book? {
+        val normalized = normalizeIsbn(isbn)
+        if (normalized.isBlank()) return null
+        return when (kidId) {
+            null -> bookDao.getBookByIsbnForParent(normalized)
+            else -> bookDao.getBookByIsbnAndKid(normalized, kidId)
+        }
+    }
+
+    suspend fun lookupMetadataByIsbn(rawIsbn: String): Result<Book> {
         val isbn = normalizeIsbn(rawIsbn)
         if (isbn.isBlank()) {
             return Result.failure(IllegalArgumentException("Please enter a valid ISBN number."))
         }
-
-        bookDao.getBookByIsbn(isbn)?.let { return Result.success(it) }
 
         return try {
             val key = "ISBN:$isbn"
@@ -108,7 +116,7 @@ class BookRepository(private val bookDao: BookDao) {
                         title = "",
                         author = "",
                         coverUrl = CoverUrlResolver.fromIsbn(isbn),
-                    )
+                    ),
                 )
             } else {
                 Result.failure(Exception(ApiErrorMapper.friendlyMessage(e)))
@@ -117,6 +125,12 @@ class BookRepository(private val bookDao: BookDao) {
             Result.failure(Exception(ApiErrorMapper.friendlyMessage(e)))
         }
     }
+    suspend fun updateBook(book: Book) = bookDao.update(
+        book.copy(coverUrl = CoverUrlResolver.bestAvailable(book.isbn, book.coverUrl))
+    )
+    suspend fun deleteBook(book: Book) = bookDao.delete(book)
+
+    suspend fun lookupByIsbn(rawIsbn: String): Result<Book> = lookupMetadataByIsbn(rawIsbn)
 
     suspend fun searchByTitleAndAuthor(title: String, author: String): Result<List<BookSearchResult>> {
         val trimmedTitle = title.trim()

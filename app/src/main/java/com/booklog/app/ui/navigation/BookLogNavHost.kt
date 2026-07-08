@@ -17,7 +17,9 @@ import androidx.activity.ComponentActivity
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -33,7 +35,11 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.booklog.app.BookLogApplication
 import com.booklog.app.data.audio.AppSound
+import com.booklog.app.data.local.Book
+import com.booklog.app.data.local.CompletedBook
 import com.booklog.app.ui.components.ActiveReaderSelector
+import com.booklog.app.ui.components.ScanHistoryDialog
+import com.booklog.app.ui.screens.LogCompletionScreen
 import kotlinx.coroutines.launch
 import com.booklog.app.ui.screens.AddBookScreen
 import com.booklog.app.ui.screens.BookDetailScreen
@@ -50,6 +56,7 @@ import com.booklog.app.viewmodel.BookDetailViewModel
 import com.booklog.app.viewmodel.KidsViewModel
 import com.booklog.app.viewmodel.LeaderboardViewModel
 import com.booklog.app.viewmodel.LibraryViewModel
+import com.booklog.app.viewmodel.LogCompletionViewModel
 import com.booklog.app.viewmodel.MilestonesViewModel
 
 object Routes {
@@ -59,6 +66,7 @@ object Routes {
     const val MILESTONES = "milestones"
     const val ADD = "add"
     const val SCAN = "scan"
+    const val LOG_COMPLETION = "log_completion"
     const val DETAIL = "detail/{bookId}"
     const val KID_PROFILES = "kid_profiles"
     const val KID_PROFILE_DETAIL = "kid_profile/{kidId}"
@@ -79,7 +87,9 @@ fun BookLogNavHost(
 ) {
     val navController = rememberNavController()
     val snackbarHostState = remember { SnackbarHostState() }
-    val authViewModel: AuthViewModel = viewModel(factory = AuthViewModel.Factory(app.cloudRepository))
+    val authViewModel: AuthViewModel = viewModel(
+        factory = AuthViewModel.Factory(app.cloudRepository, app.guestPreferences),
+    )
     val authState by authViewModel.uiState.collectAsStateWithLifecycle()
 
     val navBackStackEntry by navController.currentBackStackEntryAsState()
@@ -196,7 +206,14 @@ fun BookLogNavHost(
                 )
             }
             composable(Routes.LEADERBOARD) {
-                val vm: LeaderboardViewModel = viewModel(factory = LeaderboardViewModel.Factory(app.cloudRepository))
+                val vm: LeaderboardViewModel = viewModel(
+                    factory = LeaderboardViewModel.Factory(
+                        app.cloudRepository,
+                        app.kidProfileRepository,
+                        app.rewardRepository,
+                        app.repository,
+                    ),
+                )
                 LeaderboardScreen(
                     viewModel = vm,
                     isSignedIn = authState.user != null,
@@ -298,18 +315,43 @@ fun BookLogNavHost(
                     viewModel = vm,
                     activeReaderLabel = sharedKidsState.activeKid?.let { "${it.emoji} ${it.firstName}" } ?: "Parent",
                     onBack = { navController.popBackStack() },
-                    onSaved = { _, title ->
-                        runCatching {
-                            navController.getBackStackEntry(Routes.LIBRARY)
-                                .savedStateHandle["added_book_title"] = title
+                    onSaved = { book ->
+                        if ((book.pageCount ?: 0) > 0) {
+                            navController.navigateToLogCompletion(book)
+                        } else {
+                            runCatching {
+                                navController.getBackStackEntry(Routes.LIBRARY)
+                                    .savedStateHandle["added_book_title"] = book.title
+                            }
+                            navController.popBackStack()
                         }
-                        navController.popBackStack()
                     },
                     scannedIsbn = scannedIsbn,
                 )
             }
             composable(Routes.SCAN) {
                 val scope = rememberCoroutineScope()
+                var pendingBook by remember { mutableStateOf<Book?>(null) }
+                var scanHistory by remember { mutableStateOf<List<CompletedBook>>(emptyList()) }
+                var showHistoryDialog by remember { mutableStateOf(false) }
+
+                if (showHistoryDialog && pendingBook != null) {
+                    ScanHistoryDialog(
+                        title = pendingBook!!.title,
+                        author = pendingBook!!.author,
+                        history = scanHistory,
+                        onLogAnotherRead = {
+                            showHistoryDialog = false
+                            navController.navigateToLogCompletion(pendingBook!!)
+                            pendingBook = null
+                        },
+                        onDismiss = {
+                            showHistoryDialog = false
+                            pendingBook = null
+                        },
+                    )
+                }
+
                 ScanScreen(
                     onBack = { navController.popBackStack() },
                     onIsbnScanned = { isbn ->
@@ -317,17 +359,30 @@ fun BookLogNavHost(
                             app.audioManager.playSound(AppSound.SCAN_SUCCESS)
                             app.recordBookScanned()
                             val kidId = app.activeKidPreferences.getActiveKidId()
-                            app.repository.lookupByIsbn(isbn)
-                                .onSuccess { lookedUp ->
-                                    val book = lookedUp.copy(kidProfileId = kidId)
-                                    if (book.title.isNotBlank() && book.author.isNotBlank()) {
-                                        val id = app.repository.saveBook(book)
-                                        app.syncBookToCloud(book.copy(id = id))
-                                        runCatching {
-                                            navController.getBackStackEntry(Routes.LIBRARY)
-                                                .savedStateHandle["added_book_title"] = book.title
+                            app.repository.lookupMetadataByIsbn(isbn)
+                                .onSuccess { metadata ->
+                                    val localBook = app.repository.findLocalBookByIsbn(isbn, kidId)
+                                    val history = if (!isbn.isBlank()) {
+                                        app.rewardRepository.getCompletionHistory(isbn, kidId)
+                                    } else {
+                                        emptyList()
+                                    }
+                                    val merged = (localBook ?: metadata).copy(
+                                        kidProfileId = kidId,
+                                        title = metadata.title.ifBlank { localBook?.title.orEmpty() },
+                                        author = metadata.author.ifBlank { localBook?.author.orEmpty() },
+                                        pageCount = metadata.pageCount ?: localBook?.pageCount,
+                                        coverUrl = metadata.coverUrl ?: localBook?.coverUrl,
+                                        isbn = metadata.isbn ?: localBook?.isbn,
+                                    )
+                                    if (merged.title.isNotBlank() && merged.author.isNotBlank()) {
+                                        if (history.isNotEmpty()) {
+                                            pendingBook = merged
+                                            scanHistory = history
+                                            showHistoryDialog = true
+                                        } else {
+                                            navController.navigateToLogCompletion(merged)
                                         }
-                                        navController.popBackStack(Routes.LIBRARY, inclusive = false)
                                     } else {
                                         navController.navigate(Routes.ADD) {
                                             popUpTo(Routes.SCAN) { inclusive = true }
@@ -348,6 +403,38 @@ fun BookLogNavHost(
                                         ?.set("scanned_isbn", isbn)
                                 }
                         }
+                    },
+                )
+            }
+            composable(Routes.LOG_COMPLETION) { entry ->
+                val title by entry.savedStateHandle
+                    .getStateFlow("completion_title", "")
+                    .collectAsStateWithLifecycle()
+                val book = entry.savedStateHandle.toCompletionBook(title)
+                if (book == null) return@composable
+                val kidId = app.activeKidPreferences.getActiveKidId()
+                val vm: LogCompletionViewModel = viewModel(
+                    key = "log_completion_${book.isbn}_${book.id}",
+                    factory = LogCompletionViewModel.Factory(
+                        initialBook = book,
+                        kidId = kidId,
+                        bookRepository = app.repository,
+                        rewardRepository = app.rewardRepository,
+                        onBookSynced = { saved -> app.syncBookToCloud(saved) },
+                    ),
+                )
+                LogCompletionScreen(
+                    viewModel = vm,
+                    activeReaderLabel = sharedKidsState.activeKid?.let { "${it.emoji} ${it.firstName}" } ?: "Parent",
+                    onBack = { navController.popBackStack() },
+                    onSuccess = { title, rewardCents ->
+                        app.audioManager.playSound(AppSound.BOOK_ADDED)
+                        app.celebrateMilestonesForActiveProfile()
+                        runCatching {
+                            navController.getBackStackEntry(Routes.LIBRARY)
+                                .savedStateHandle["added_book_title"] = "$title (+${com.booklog.app.data.repository.RewardRepository.formatCents(rewardCents)})"
+                        }
+                        navController.popBackStack(Routes.LIBRARY, inclusive = false)
                     },
                 )
             }
@@ -379,4 +466,32 @@ fun BookLogNavHost(
             }
         }
     }
+}
+
+private fun NavHostController.navigateToLogCompletion(book: Book) {
+    navigate(Routes.LOG_COMPLETION)
+    runCatching {
+        getBackStackEntry(Routes.LOG_COMPLETION).savedStateHandle.putCompletionBook(book)
+    }
+}
+
+private fun androidx.lifecycle.SavedStateHandle.putCompletionBook(book: Book) {
+    set("completion_isbn", book.isbn)
+    set("completion_title", book.title)
+    set("completion_author", book.author)
+    set("completion_pages", book.pageCount ?: 0)
+    set("completion_cover_url", book.coverUrl)
+    set("completion_book_id", book.id)
+}
+
+private fun androidx.lifecycle.SavedStateHandle.toCompletionBook(title: String): Book? {
+    if (title.isBlank()) return null
+    return Book(
+        id = get<Long>("completion_book_id") ?: 0L,
+        isbn = get<String>("completion_isbn"),
+        title = title,
+        author = get<String>("completion_author") ?: "",
+        pageCount = get<Int>("completion_pages"),
+        coverUrl = get<String>("completion_cover_url"),
+    )
 }

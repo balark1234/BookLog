@@ -16,14 +16,12 @@ data class ReadingSnapshot(
     val pagesReadThisMonth: Int = 0,
     val rewardRedemptions: Int = 0,
     val totalRedeemedCents: Int = 0,
+    val totalMinutesRead: Int = 0,
+    val earnedCents: Int = 0,
+    val availableBalanceCents: Int = 0,
 ) {
     val totalPages: Int get() = pagesFinished + pagesInProgress
 
-    val earnedCents: Int get() = totalPages
-
-    val availableBalanceCents: Int get() = (earnedCents - totalRedeemedCents).coerceAtLeast(0)
-
-    /** 1 page = 1 cent; 100 pages = $1.00 */
     val readingDollars: Double get() = earnedCents / 100.0
 
     val availableDollars: Double get() = availableBalanceCents / 100.0

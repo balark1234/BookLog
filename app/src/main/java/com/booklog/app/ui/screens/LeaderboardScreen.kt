@@ -26,6 +26,10 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -40,10 +44,13 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.booklog.app.data.cloud.LeaderboardEntry
 import com.booklog.app.data.cloud.LeaderboardType
+import com.booklog.app.data.leaderboard.LocalLeaderboardEntry
+import com.booklog.app.data.repository.RewardRepository
 import com.booklog.app.ui.theme.CoralPink
 import com.booklog.app.ui.theme.Lavender
 import com.booklog.app.ui.theme.SkyBlue
 import com.booklog.app.ui.theme.SunnyYellow
+import com.booklog.app.viewmodel.LeaderboardScope
 import com.booklog.app.viewmodel.LeaderboardViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -61,7 +68,14 @@ fun LeaderboardScreen(
             title = {
                 Column {
                     Text("Reading Champions", fontWeight = FontWeight.Bold)
-                    Text(state.type.subtitle, style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        if (state.scope == LeaderboardScope.LOCAL) {
+                            "Family rankings by reading time"
+                        } else {
+                            state.type.subtitle
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
             },
             actions = {
@@ -71,23 +85,49 @@ fun LeaderboardScreen(
             },
         )
 
-        Row(
+        SingleChoiceSegmentedButtonRow(
             modifier = Modifier
                 .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            LeaderboardType.entries.forEach { type ->
-                FilterChip(
-                    selected = state.type == type,
-                    onClick = { viewModel.selectType(type) },
-                    label = { Text(type.label) },
-                )
+            SegmentedButton(
+                selected = state.scope == LeaderboardScope.LOCAL,
+                onClick = { viewModel.selectScope(LeaderboardScope.LOCAL) },
+                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+            ) {
+                Text("Family")
+            }
+            SegmentedButton(
+                selected = state.scope == LeaderboardScope.GLOBAL,
+                onClick = { viewModel.selectScope(LeaderboardScope.GLOBAL) },
+                shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+            ) {
+                Text("Global")
             }
         }
 
-        if (!isSignedIn && state.type in setOf(LeaderboardType.READERS, LeaderboardType.MILESTONES)) {
+        if (state.scope == LeaderboardScope.GLOBAL) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                LeaderboardType.entries.forEach { type ->
+                    FilterChip(
+                        selected = state.type == type,
+                        onClick = { viewModel.selectType(type) },
+                        label = { Text(type.label) },
+                    )
+                }
+            }
+        }
+
+        if (state.scope == LeaderboardScope.GLOBAL &&
+            !isSignedIn &&
+            state.type in setOf(LeaderboardType.READERS, LeaderboardType.MILESTONES)
+        ) {
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -99,7 +139,7 @@ fun LeaderboardScreen(
                     Icon(Icons.Default.EmojiEvents, contentDescription = null, tint = SunnyYellow, modifier = Modifier.size(40.dp))
                     Text("Join the competition!", fontWeight = FontWeight.Bold, fontSize = 18.sp)
                     Text("Create an account so you and your kids appear on reader and milestone leaderboards.")
-                    androidx.compose.material3.OutlinedButton(onClick = onSignInClick) {
+                    OutlinedButton(onClick = onSignInClick) {
                         Text("Create Account")
                     }
                 }
@@ -110,6 +150,31 @@ fun LeaderboardScreen(
             state.isLoading -> CircularProgressIndicator(
                 Modifier.align(Alignment.CenterHorizontally).padding(32.dp),
             )
+            state.scope == LeaderboardScope.LOCAL -> {
+                if (state.localEntries.isEmpty()) {
+                    Column(
+                        Modifier.fillMaxSize().padding(32.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) {
+                        Text("👨‍👩‍👧‍👦", fontSize = 48.sp)
+                        Text("No family readers yet!", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
+                        Text(
+                            "Add kid profiles and log book completions to see who reads the most!",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        items(state.localEntries, key = { it.kidId }) { entry ->
+                            LocalLeaderboardRow(entry = entry)
+                        }
+                    }
+                }
+            }
             state.entries.isEmpty() -> Column(
                 Modifier.fillMaxSize().padding(32.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -133,6 +198,51 @@ fun LeaderboardScreen(
                         isCurrentUser = entry.id == currentUserId,
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LocalLeaderboardRow(entry: LocalLeaderboardEntry) {
+    val medal = when (entry.rank) {
+        1 -> "🥇"
+        2 -> "🥈"
+        3 -> "🥉"
+        else -> "#${entry.rank}"
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(2.dp),
+    ) {
+        Row(
+            Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(medal, fontSize = 22.sp, modifier = Modifier.size(40.dp))
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(Brush.linearGradient(listOf(SkyBlue, CoralPink))),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(entry.emoji, fontWeight = FontWeight.Bold)
+            }
+            Column(Modifier.weight(1f)) {
+                Text(entry.displayName, fontWeight = FontWeight.Bold)
+                Text(
+                    "${entry.minutesRead} min · ${entry.pagesRead} pages · ${entry.booksCompleted} books",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    "Streak: ${entry.currentStreak} day${if (entry.currentStreak == 1) "" else "s"} · ${RewardRepository.formatCents(entry.rewardCents)} earned",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }

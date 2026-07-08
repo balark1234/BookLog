@@ -158,7 +158,7 @@ private fun ReadingRewardsCard(snapshot: com.booklog.app.data.milestones.Reading
                 Text("💰", fontSize = 36.sp)
                 Column {
                     Text("Reading Rewards", fontWeight = FontWeight.Bold, fontSize = 22.sp)
-                    Text("100 pages = \$1.00 · 1 page = 1¢", style = MaterialTheme.typography.bodySmall)
+                    Text("1¢/page + 2¢/min · re-reads earn time only", style = MaterialTheme.typography.bodySmall)
                 }
             }
             Text(available, fontSize = 40.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
@@ -168,10 +168,12 @@ private fun ReadingRewardsCard(snapshot: com.booklog.app.data.milestones.Reading
                 Text("Spent: $redeemed", style = MaterialTheme.typography.bodySmall)
             }
             Text(
-                if (snapshot.totalPages == 0) {
-                    "Start reading to earn your first cent!"
-                } else {
-                    "${snapshot.totalPages} pages read · ${snapshot.pagesUntilNextDollar} pages until next dollar"
+                when {
+                    snapshot.earnedCents == 0 -> "Log a book completion to earn your first reward!"
+                    snapshot.totalMinutesRead > 0 ->
+                        "${snapshot.totalMinutesRead} min read · ${snapshot.totalPages} pages · ${snapshot.centsTowardNextDollar}¢ toward next dollar"
+                    else ->
+                        "${snapshot.totalPages} pages read · ${snapshot.centsTowardNextDollar}¢ toward next dollar"
                 },
                 style = MaterialTheme.typography.bodyMedium,
             )

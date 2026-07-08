@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.booklog.app.data.cloud.CloudRepository
 import com.booklog.app.data.cloud.CloudUserProfile
+import com.booklog.app.data.profiles.GuestPreferences
 import com.google.firebase.auth.FirebaseUser
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,17 +19,30 @@ data class AuthUiState(
     val isLoading: Boolean = false,
     val error: String? = null,
     val successMessage: String? = null,
+    val isGuestMode: Boolean = false,
 )
 
-class AuthViewModel(private val cloudRepository: CloudRepository) : ViewModel() {
-    private val _uiState = MutableStateFlow(AuthUiState())
+class AuthViewModel(
+    private val cloudRepository: CloudRepository,
+    private val guestPreferences: GuestPreferences,
+) : ViewModel() {
+    private val _uiState = MutableStateFlow(AuthUiState(isGuestMode = guestPreferences.isGuestMode()))
     val uiState: StateFlow<AuthUiState> = _uiState.asStateFlow()
 
     init {
         viewModelScope.launch {
             cloudRepository.observeAuthState().collect { user ->
-                _uiState.update { it.copy(user = user, error = null) }
-                if (user != null) refreshProfile()
+                _uiState.update {
+                    it.copy(
+                        user = user,
+                        error = null,
+                        isGuestMode = if (user != null) false else it.isGuestMode,
+                    )
+                }
+                if (user != null) {
+                    guestPreferences.clearGuestMode()
+                    refreshProfile()
+                }
             }
         }
     }
@@ -38,8 +52,13 @@ class AuthViewModel(private val cloudRepository: CloudRepository) : ViewModel() 
             _uiState.update { it.copy(isLoading = true, error = null, successMessage = null) }
             cloudRepository.signIn(email, password)
                 .onSuccess {
+                    guestPreferences.clearGuestMode()
                     _uiState.update {
-                        it.copy(isLoading = false, successMessage = "Welcome back! Your books are syncing ☁️")
+                        it.copy(
+                            isLoading = false,
+                            isGuestMode = false,
+                            successMessage = "Welcome back! Your books are syncing ☁️",
+                        )
                     }
                 }
                 .onFailure { e ->
@@ -59,11 +78,13 @@ class AuthViewModel(private val cloudRepository: CloudRepository) : ViewModel() 
             _uiState.update { it.copy(isLoading = true, error = null, successMessage = null) }
             cloudRepository.signUp(email, password, displayName)
                 .onSuccess {
+                    guestPreferences.clearGuestMode()
                     cloudRepository.syncLocalBooksToCloud()
                     cloudRepository.syncKidProfiles()
                     _uiState.update {
                         it.copy(
                             isLoading = false,
+                            isGuestMode = false,
                             successMessage = "Account created! You're on the leaderboard now 🏆",
                         )
                     }
@@ -76,9 +97,56 @@ class AuthViewModel(private val cloudRepository: CloudRepository) : ViewModel() 
         }
     }
 
+    fun signInWithGoogle(idToken: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, error = null, successMessage = null) }
+            cloudRepository.signInWithGoogle(idToken)
+                .onSuccess {
+                    guestPreferences.clearGuestMode()
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            isGuestMode = false,
+                            successMessage = "Signed in with Google! Your books are syncing ☁️",
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    _uiState.update {
+                        it.copy(isLoading = false, error = friendlyAuthError(e.message))
+                    }
+                }
+        }
+    }
+
+    fun continueAsGuest() {
+        guestPreferences.setGuestMode(true)
+        _uiState.update {
+            it.copy(
+                isGuestMode = true,
+                error = null,
+                successMessage = "Browsing as guest — your books stay on this device!",
+            )
+        }
+    }
+
+    fun exitGuestMode() {
+        guestPreferences.clearGuestMode()
+        _uiState.update {
+            it.copy(isGuestMode = false, successMessage = null, error = null)
+        }
+    }
+
     fun signOut() {
         cloudRepository.signOut()
-        _uiState.update { it.copy(profile = null, successMessage = "Signed out. Your local books are still here!") }
+        guestPreferences.clearGuestMode()
+        _uiState.update {
+            it.copy(
+                profile = null,
+                isGuestMode = false,
+                successMessage = "Signed out. Your local books are still here!",
+            )
+        }
     }
 
     fun syncNow() {
@@ -116,9 +184,12 @@ class AuthViewModel(private val cloudRepository: CloudRepository) : ViewModel() 
         else -> message
     }
 
-    class Factory(private val cloudRepository: CloudRepository) : ViewModelProvider.Factory {
+    class Factory(
+        private val cloudRepository: CloudRepository,
+        private val guestPreferences: GuestPreferences,
+    ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
-            AuthViewModel(cloudRepository) as T
+            AuthViewModel(cloudRepository, guestPreferences) as T
     }
 }

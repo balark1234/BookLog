@@ -28,6 +28,12 @@ interface BookDao {
     @Query("SELECT * FROM books WHERE isbn = :isbn LIMIT 1")
     suspend fun getBookByIsbn(isbn: String): Book?
 
+    @Query("SELECT * FROM books WHERE isbn = :isbn AND kidProfileId IS :kidId LIMIT 1")
+    suspend fun getBookByIsbnAndKid(isbn: String, kidId: Long?): Book?
+
+    @Query("SELECT * FROM books WHERE isbn = :isbn AND kidProfileId IS NULL LIMIT 1")
+    suspend fun getBookByIsbnForParent(isbn: String): Book?
+
     @Query("SELECT COUNT(*) FROM books")
     fun observeTotalCount(): Flow<Int>
 

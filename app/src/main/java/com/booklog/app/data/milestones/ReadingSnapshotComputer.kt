@@ -1,6 +1,7 @@
 package com.booklog.app.data.milestones
 
 import com.booklog.app.data.local.Book
+import com.booklog.app.data.local.CompletedBook
 import com.booklog.app.data.local.ReadingDayLog
 import com.booklog.app.data.local.ReadingStatus
 import java.text.SimpleDateFormat
@@ -16,6 +17,9 @@ object ReadingSnapshotComputer {
         booksScanned: Int,
         totalRedeemedCents: Int,
         rewardRedemptions: Int,
+        completions: List<CompletedBook> = emptyList(),
+        earnedCents: Int = 0,
+        availableBalanceCents: Int = 0,
     ): ReadingSnapshot {
         val finishedBooks = books.filter { it.status == ReadingStatus.FINISHED }
         val monthPrefix = currentMonthPrefix()
@@ -40,6 +44,14 @@ object ReadingSnapshotComputer {
             finished - started <= SEVEN_DAYS_MS
         }
 
+        val completionEarned = completions.sumOf { it.totalRewardCents }
+        val resolvedEarned = if (earnedCents > 0) earnedCents else completionEarned
+        val resolvedBalance = if (availableBalanceCents > 0 || earnedCents > 0) {
+            availableBalanceCents
+        } else {
+            (resolvedEarned - totalRedeemedCents).coerceAtLeast(0)
+        }
+
         return ReadingSnapshot(
             totalBooks = books.size,
             wantToRead = books.count { it.status == ReadingStatus.WANT_TO_READ },
@@ -58,6 +70,9 @@ object ReadingSnapshotComputer {
             pagesReadThisMonth = pagesThisMonth,
             rewardRedemptions = rewardRedemptions,
             totalRedeemedCents = totalRedeemedCents,
+            totalMinutesRead = completions.sumOf { it.minutesRead },
+            earnedCents = resolvedEarned,
+            availableBalanceCents = resolvedBalance,
         )
     }
 

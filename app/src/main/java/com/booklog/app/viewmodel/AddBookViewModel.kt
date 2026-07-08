@@ -32,7 +32,7 @@ data class AddBookUiState(
 )
 
 sealed class AddBookEvent {
-    data class BookSaved(val id: Long, val title: String) : AddBookEvent()
+    data class BookSaved(val book: Book) : AddBookEvent()
 }
 
 class AddBookViewModel(
@@ -173,7 +173,7 @@ class AddBookViewModel(
                     val saved = book.copy(id = id)
                     onBookSaved?.invoke(saved)
                     _uiState.update { it.copy(isLoading = false, saveSuccess = true) }
-                    _events.emit(AddBookEvent.BookSaved(id, book.title))
+                    _events.emit(AddBookEvent.BookSaved(saved))
                 }
                 .onFailure { error ->
                     _uiState.update {
