@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">BookLog</string>
-    <!-- Replace with your Firebase web client ID from google-services.json -->
-    <string name="default_web_client_id">ADD_YOUR_WEB_CLIENT_ID</string>
+    <!--
+      Do NOT put Firebase API keys or OAuth client IDs here (they would go into git).
+      default_web_client_id is generated at build time from app/google-services.json
+      by the Google Services plugin. Keep google-services.json local only (.gitignore).
+    -->
 </resources>

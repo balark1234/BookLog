@@ -19,11 +19,16 @@ captures/
 .externalNativeBuild/
 .cxx/
 
-# Firebase config — contains API keys, project IDs, and app identifiers.
-# Download from Firebase Console and place at app/google-services.json locally.
+# Firebase config — API keys, OAuth client IDs, project numbers, app IDs.
+# Download from Firebase Console → place at app/google-services.json (local only).
 google-services.json
 **/google-services.json
 Firebase/
+
+# Local-only string overrides (never commit real client IDs / keys)
+**/res/values/secrets.xml
+**/res/values/*local*.xml
+**/res/values/firebase_secrets.xml
 
 # Signing / keystores / env secrets
 *.keystore
@@ -32,6 +37,7 @@ Firebase/
 *.pem
 *.key
 service-account*.json
+*-firebase-adminsdk-*.json
 credentials.json
 .env
 .env.*
