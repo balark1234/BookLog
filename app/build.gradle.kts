@@ -7,11 +7,11 @@ plugins {
 }
 
 android {
-    namespace = "com.booklog.app"
+    namespace = "com.brk.booklogger"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.booklog.app"
+        applicationId = "com.brk.booklogger"
         minSdk = 26
         targetSdk = 35
         versionCode = 1

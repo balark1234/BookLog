@@ -11,7 +11,7 @@ app/build/
 .kotlin/
 local.properties
 
-# Android Studio
+# Android Studio / local machine paths
 .idea/
 *.iml
 .DS_Store
@@ -19,8 +19,24 @@ captures/
 .externalNativeBuild/
 .cxx/
 
-# Firebase config (add your own locally)
-app/google-services.json
+# Firebase config — contains API keys, project IDs, and app identifiers.
+# Download from Firebase Console and place at app/google-services.json locally.
+google-services.json
+**/google-services.json
+Firebase/
+
+# Signing / keystores / env secrets
+*.keystore
+*.jks
+*.p12
+*.pem
+*.key
+service-account*.json
+credentials.json
+.env
+.env.*
+secrets/
+**/secrets/
 
 # Personal / device screenshots
 Testing/
@@ -28,15 +44,8 @@ Testing/
 **/Screenshot_*.png
 screenshots/
 
-# Secrets
-*.keystore
-*.jks
-*.p12
-*.pem
-.env
-.env.*
-
 # Logs and temp files
 *.log
 *.txt
 !gradle/wrapper/gradle-wrapper.properties
+build-output.txt
