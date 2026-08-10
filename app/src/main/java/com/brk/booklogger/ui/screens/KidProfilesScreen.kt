@@ -58,12 +58,12 @@ fun KidProfilesScreen(
                 title = {
                     Column {
                         Text(
-                            "Kid Profiles",
+                            "Readers",
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onBackground,
                         )
                         Text(
-                            "Who's reading today?",
+                            "Adults and kids who log books",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
@@ -78,7 +78,7 @@ fun KidProfilesScreen(
         },
         floatingActionButton = {
             FloatingActionButton(onClick = onAddKid, containerColor = SkyBlue) {
-                Icon(Icons.Default.Add, contentDescription = "Add kid")
+                Icon(Icons.Default.Add, contentDescription = "Add reader")
             }
         },
     ) { padding ->
@@ -114,14 +114,9 @@ fun KidProfilesScreen(
                         },
                     )
                 }
-                FilterChip(
-                    selected = state.activeKidId == null,
-                    onClick = { viewModel.selectKid(null) },
-                    label = { Text("Parent") },
-                )
             }
             Text(
-                "Books you add will be tracked for the selected reader on milestones and leaderboards.",
+                "Books you add are tracked for the selected reader (milestones, rewards, stats).",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -134,7 +129,7 @@ fun KidProfilesScreen(
             }
 
             Text(
-                "All profiles",
+                "All readers",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
             )
@@ -145,9 +140,9 @@ fun KidProfilesScreen(
                     colors = CardDefaults.cardColors(containerColor = MintGreen.copy(alpha = 0.2f)),
                 ) {
                     Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("No kid profiles yet", fontWeight = FontWeight.Bold)
+                        Text("No readers yet", fontWeight = FontWeight.Bold)
                         Text(
-                            "Tap + to add name, birthday, gender, and more.",
+                            "Tap + to add an adult or child reader.",
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }
@@ -180,7 +175,7 @@ private fun KidProfileListCard(kid: KidProfile, onClick: () -> Unit) {
             Column(Modifier.weight(1f)) {
                 Text("${kid.emoji} ${kid.name}", fontWeight = FontWeight.Bold)
                 Text(
-                    "${kid.genderLabel} Â· ${KidAgeCalculator.ageLabel(kid.dateOfBirth)}",
+                    "${kid.typeLabel} · ${kid.genderLabel} · ${KidAgeCalculator.ageLabel(kid.dateOfBirth)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

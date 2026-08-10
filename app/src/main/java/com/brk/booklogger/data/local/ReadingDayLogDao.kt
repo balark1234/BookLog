@@ -22,4 +22,7 @@ interface ReadingDayLogDao {
 
     @Query("SELECT * FROM reading_day_logs WHERE kidProfileId = :kidId")
     suspend fun getAllForKid(kidId: Long): List<ReadingDayLog>
+
+    @Query("UPDATE reading_day_logs SET kidProfileId = :readerId WHERE kidProfileId IS NULL")
+    suspend fun reassignParentRowsToReader(readerId: Long)
 }

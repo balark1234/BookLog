@@ -20,6 +20,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -28,7 +29,6 @@ import androidx.compose.material3.OutlinedTextField
 import com.brk.booklogger.ui.components.FocusScrollOutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.brk.booklogger.data.local.KidGender
 import com.brk.booklogger.data.local.KidProfile
+import com.brk.booklogger.data.local.ReaderProfileType
 import com.brk.booklogger.data.profiles.KidAgeCalculator
 import com.brk.booklogger.data.repository.KidProfileRepository
 import com.brk.booklogger.ui.components.BirthDatePickerDialog
@@ -64,8 +65,9 @@ fun KidProfileDetailScreen(
     val isNew = kidId == 0L
 
     var name by remember { mutableStateOf("") }
-    var emoji by remember { mutableStateOf("ðŸ“š") }
+    var emoji by remember { mutableStateOf("📚") }
     var gender by remember { mutableStateOf(KidGender.PREFER_NOT_TO_SAY) }
+    var profileType by remember { mutableStateOf(ReaderProfileType.CHILD) }
     var dateOfBirth by remember { mutableStateOf<Long?>(null) }
     var favoriteGenre by remember { mutableStateOf("") }
     var notes by remember { mutableStateOf("") }
@@ -82,6 +84,7 @@ fun KidProfileDetailScreen(
                 name = profile.name
                 emoji = profile.emoji
                 gender = KidGender.entries.find { it.name == profile.gender } ?: KidGender.PREFER_NOT_TO_SAY
+                profileType = profile.readerType
                 dateOfBirth = profile.dateOfBirth?.let(KidAgeCalculator::normalizeStoredMillis)
                 favoriteGenre = profile.favoriteGenre
                 notes = profile.notes
@@ -107,7 +110,7 @@ fun KidProfileDetailScreen(
                 modifier = Modifier.statusBarsPadding(),
                 title = {
                     Text(
-                        if (isNew) "Add Kid Profile" else "Edit Profile",
+                        if (isNew) "Add Reader" else "Edit Reader",
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onBackground,
                     )
@@ -170,11 +173,31 @@ fun KidProfileDetailScreen(
             )
             FocusScrollOutlinedTextField(
                 value = emoji,
-                onValueChange = { if (it.length <= 2) emoji = it },
+                onValueChange = { if (it.length <= 8) emoji = it },
                 label = { Text("Emoji avatar") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
+
+            Text("Reader type", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = profileType == ReaderProfileType.ADULT,
+                    onClick = {
+                        profileType = ReaderProfileType.ADULT
+                        if (emoji == "📚") emoji = "👤"
+                    },
+                    label = { Text("Adult") },
+                )
+                FilterChip(
+                    selected = profileType == ReaderProfileType.CHILD,
+                    onClick = {
+                        profileType = ReaderProfileType.CHILD
+                        if (emoji == "👤") emoji = "📚"
+                    },
+                    label = { Text("Child") },
+                )
+            }
 
             ExposedDropdownMenuBox(
                 expanded = genderExpanded,
@@ -239,11 +262,15 @@ fun KidProfileDetailScreen(
                         KidProfile(
                             id = kidId,
                             name = name,
-                            emoji = emoji.ifBlank { "ðŸ“š" },
+                            emoji = emoji.ifBlank {
+                                if (profileType == ReaderProfileType.ADULT) "👤" else "📚"
+                            },
                             gender = gender.name,
                             dateOfBirth = dateOfBirth,
                             favoriteGenre = favoriteGenre.trim(),
                             notes = notes.trim(),
+                            profileType = profileType.name,
+                            cloudId = existingProfile?.cloudId,
                             createdAt = existingProfile?.createdAt ?: System.currentTimeMillis(),
                         ),
                         onSuccess = onBack,
@@ -253,7 +280,7 @@ fun KidProfileDetailScreen(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
             ) {
-                Text(if (isNew) "Create Profile" else "Save Profile")
+                Text(if (isNew) "Create Reader" else "Save Reader")
             }
         }
     }

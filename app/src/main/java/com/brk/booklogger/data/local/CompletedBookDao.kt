@@ -61,6 +61,9 @@ interface CompletedBookDao {
     @Query("SELECT * FROM completed_books WHERE id = :id")
     suspend fun getById(id: Long): CompletedBook?
 
+    @Query("UPDATE completed_books SET kidProfileId = :readerId WHERE kidProfileId IS NULL")
+    suspend fun reassignParentRowsToReader(readerId: Long)
+
     @Insert
     suspend fun insert(completed: CompletedBook): Long
 

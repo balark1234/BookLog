@@ -58,6 +58,12 @@ interface BookDao {
     @Query("SELECT * FROM books WHERE kidProfileId IS NULL")
     suspend fun getBooksWithoutKid(): List<Book>
 
+    @Query("SELECT * FROM books WHERE cloudId = :cloudId LIMIT 1")
+    suspend fun getByCloudId(cloudId: String): Book?
+
+    @Query("UPDATE books SET kidProfileId = :readerId WHERE kidProfileId IS NULL")
+    suspend fun reassignParentBooksToReader(readerId: Long)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(book: Book): Long
 

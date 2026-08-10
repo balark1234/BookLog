@@ -2,7 +2,7 @@ package com.brk.booklogger.data.cloud
 
 enum class LeaderboardType(val label: String, val subtitle: String) {
     READERS("Readers", "Most books finished"),
-    KIDS("Kids", "Young reader champions"),
+    KIDS("Young readers", "Child reader champions"),
     AUTHORS("Authors", "Most-read authors"),
     PUBLISHERS("Publishers", "Most-read publishers"),
     GENRES("Genres", "Top genres"),
@@ -17,6 +17,16 @@ data class CloudUserProfile(
     val pagesRead: Int = 0,
     val booksTotal: Int = 0,
     val milestonesUnlocked: Int = 0,
+    val householdId: String? = null,
+)
+
+data class HouseholdInfo(
+    val id: String = "",
+    val inviteCode: String = "",
+    val memberUids: List<String> = emptyList(),
+    val memberNames: List<String> = emptyList(),
+    val createdBy: String = "",
+    val isLinked: Boolean = false,
 )
 
 data class CloudKidProfile(

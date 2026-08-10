@@ -2,10 +2,12 @@ package com.brk.booklogger.data.cloud
 
 import com.brk.booklogger.data.local.Book
 import com.brk.booklogger.data.local.KidProfile
+import com.brk.booklogger.data.local.ReaderProfileType
 import com.brk.booklogger.data.local.ReadingStatus
 import com.brk.booklogger.data.milestones.Milestone
 import com.brk.booklogger.data.milestones.MilestoneEngine
 import com.brk.booklogger.data.milestones.ReadingSnapshot
+import com.brk.booklogger.data.profiles.HouseholdPreferences
 import com.brk.booklogger.data.repository.BookRepository
 import com.brk.booklogger.data.repository.KidProfileRepository
 import com.google.firebase.auth.FirebaseAuth
@@ -20,10 +22,13 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.tasks.await
+import java.util.UUID
+import kotlin.random.Random
 
 class CloudRepository(
     private val bookRepository: BookRepository,
     private val kidProfileRepository: KidProfileRepository,
+    private val householdPreferences: HouseholdPreferences,
     private val auth: FirebaseAuth = FirebaseAuth.getInstance(),
     private val firestore: FirebaseFirestore = FirebaseFirestore.getInstance(),
 ) {
@@ -47,6 +52,8 @@ class CloudRepository(
 
     suspend fun signIn(email: String, password: String): Result<Unit> = runCatching {
         auth.signInWithEmailAndPassword(email.trim(), password).await()
+        restoreHouseholdFromUser()
+        pullLibraryFromCloud()
         syncLocalBooksToCloud()
     }.map { }
 
@@ -56,61 +63,374 @@ class CloudRepository(
         val user = result.user ?: error("Google sign-in succeeded but user is missing")
         val displayName = user.displayName?.trim().orEmpty().ifBlank { "Reader" }
         ensureUserDocument(user, displayName)
+        restoreHouseholdFromUser()
+        pullLibraryFromCloud()
         syncLocalBooksToCloud()
     }.map { }
 
-    fun signOut() = auth.signOut()
+    fun signOut() {
+        householdPreferences.setHouseholdId(null)
+        householdPreferences.setInviteCode(null)
+        auth.signOut()
+    }
 
     suspend fun syncLocalBooksToCloud(): Result<Unit> = runCatching {
         val user = auth.currentUser ?: return@runCatching
-        syncAllProfiles(user)
+        val householdId = resolveHouseholdId(user)
+        if (householdId != null) {
+            syncToHousehold(user, householdId)
+        } else {
+            syncAllProfiles(user)
+        }
     }
 
     suspend fun syncBook(book: Book): Result<Unit> = runCatching {
         val user = auth.currentUser ?: return@runCatching
-        val userRef = firestore.collection("users").document(user.uid)
-        userRef.collection("books").document(book.id.toString())
-            .set(book.toCloudMap(), SetOptions.merge())
-            .await()
-        syncAllProfiles(user)
-        if (book.status == ReadingStatus.FINISHED) {
-            updateGlobalReadingStats(book)
+        val householdId = resolveHouseholdId(user)
+        val ensured = ensureBookCloudId(book)
+        if (householdId != null) {
+            val readerCloudId = ensured.kidProfileId?.let { kidProfileRepository.getById(it)?.cloudId }
+            firestore.collection(COL_HOUSEHOLDS).document(householdId)
+                .collection(COL_BOOKS).document(ensured.cloudId!!)
+                .set(ensured.toCloudMap(readerCloudId, user.uid), SetOptions.merge())
+                .await()
+            syncToHousehold(user, householdId)
+        } else {
+            firestore.collection(COL_USERS).document(user.uid)
+                .collection(COL_BOOKS).document(ensured.cloudId ?: ensured.id.toString())
+                .set(ensured.toCloudMap(null, user.uid), SetOptions.merge())
+                .await()
+            syncAllProfiles(user)
+        }
+        if (ensured.status == ReadingStatus.FINISHED) {
+            updateGlobalReadingStats(ensured)
         }
     }
 
     suspend fun syncKidProfiles(): Result<Unit> = runCatching {
         val user = auth.currentUser ?: return@runCatching
-        syncAllProfiles(user)
+        val householdId = resolveHouseholdId(user)
+        if (householdId != null) syncToHousehold(user, householdId) else syncAllProfiles(user)
     }
 
     suspend fun addKidProfile(profile: KidProfile): Result<Unit> = runCatching {
         val user = auth.currentUser ?: return@runCatching
-        val userRef = firestore.collection("users").document(user.uid)
-        userRef.collection("kids").document(profile.id.toString()).set(
-            mapOf(
-                "localId" to profile.id,
-                "name" to profile.name,
-                "emoji" to profile.emoji,
-                "gender" to profile.gender,
-                "dateOfBirth" to profile.dateOfBirth,
-                "favoriteGenre" to profile.favoriteGenre,
-                "notes" to profile.notes,
-                "createdAt" to profile.createdAt,
-            ),
-            SetOptions.merge(),
-        ).await()
-        syncKidLeaderboard(user.uid, profile, emptyList())
+        val ensured = ensureReaderCloudId(profile)
+        val householdId = resolveHouseholdId(user)
+        if (householdId != null) {
+            writeHouseholdReader(householdId, ensured)
+            syncKidLeaderboard(householdId, ensured, emptyList())
+        } else {
+            writeUserReader(user.uid, ensured)
+            syncKidLeaderboard(user.uid, ensured, emptyList())
+        }
     }
 
     suspend fun removeKidProfile(profile: KidProfile): Result<Unit> = runCatching {
         val user = auth.currentUser ?: return@runCatching
-        firestore.collection("users").document(user.uid)
-            .collection("kids").document(profile.id.toString())
-            .delete()
-            .await()
-        firestore.collection("leaderboard_kids").document(kidLeaderboardId(user.uid, profile.id))
-            .delete()
-            .await()
+        val householdId = resolveHouseholdId(user)
+        val docId = profile.cloudId ?: profile.id.toString()
+        if (householdId != null) {
+            firestore.collection(COL_HOUSEHOLDS).document(householdId)
+                .collection(COL_READERS).document(docId).delete().await()
+            firestore.collection("leaderboard_kids").document(kidLeaderboardId(householdId, profile.id))
+                .delete().await()
+        } else {
+            firestore.collection(COL_USERS).document(user.uid)
+                .collection(COL_KIDS).document(profile.id.toString()).delete().await()
+            firestore.collection("leaderboard_kids").document(kidLeaderboardId(user.uid, profile.id))
+                .delete().await()
+        }
+    }
+
+    // --- Household / partner linking ---
+
+    suspend fun fetchHousehold(): Result<HouseholdInfo> = runCatching {
+        val user = auth.currentUser ?: error("Sign in to manage a household")
+        val householdId = resolveHouseholdId(user) ?: return@runCatching HouseholdInfo(isLinked = false)
+        val doc = firestore.collection(COL_HOUSEHOLDS).document(householdId).get().await()
+        if (!doc.exists()) {
+            householdPreferences.setHouseholdId(null)
+            householdPreferences.setInviteCode(null)
+            return@runCatching HouseholdInfo(isLinked = false)
+        }
+        @Suppress("UNCHECKED_CAST")
+        val memberUids = (doc.get("memberUids") as? List<*>)?.mapNotNull { it as? String }.orEmpty()
+        val names = memberUids.map { uid ->
+            firestore.collection(COL_USERS).document(uid).get().await()
+                .getString("displayName") ?: "Partner"
+        }
+        val code = doc.getString("inviteCode").orEmpty()
+        householdPreferences.setInviteCode(code)
+        HouseholdInfo(
+            id = householdId,
+            inviteCode = code,
+            memberUids = memberUids,
+            memberNames = names,
+            createdBy = doc.getString("createdBy").orEmpty(),
+            isLinked = true,
+        )
+    }
+
+    suspend fun createHousehold(): Result<HouseholdInfo> = runCatching {
+        val user = auth.currentUser ?: error("Sign in to create a household")
+        val existing = resolveHouseholdId(user)
+        if (existing != null) {
+            return@runCatching fetchHousehold().getOrThrow()
+        }
+        val householdId = UUID.randomUUID().toString()
+        val inviteCode = generateInviteCode()
+        val now = System.currentTimeMillis()
+        firestore.collection(COL_HOUSEHOLDS).document(householdId).set(
+            mapOf(
+                "memberUids" to listOf(user.uid),
+                "inviteCode" to inviteCode,
+                "createdBy" to user.uid,
+                "createdAt" to now,
+                "updatedAt" to now,
+            ),
+        ).await()
+        // Index for join lookup
+        firestore.collection(COL_INVITES).document(inviteCode).set(
+            mapOf(
+                "householdId" to householdId,
+                "createdBy" to user.uid,
+                "createdAt" to now,
+            ),
+        ).await()
+        firestore.collection(COL_USERS).document(user.uid).set(
+            mapOf("householdId" to householdId, "updatedAt" to now),
+            SetOptions.merge(),
+        ).await()
+        householdPreferences.setHouseholdId(householdId)
+        householdPreferences.setInviteCode(inviteCode)
+        // Push current library into household
+        syncToHousehold(user, householdId)
+        HouseholdInfo(
+            id = householdId,
+            inviteCode = inviteCode,
+            memberUids = listOf(user.uid),
+            memberNames = listOf(user.displayName ?: "You"),
+            createdBy = user.uid,
+            isLinked = true,
+        )
+    }
+
+    suspend fun joinHousehold(rawCode: String): Result<HouseholdInfo> = runCatching {
+        val user = auth.currentUser ?: error("Sign in to join a household")
+        if (resolveHouseholdId(user) != null) {
+            error("You are already in a household. Leave it before joining another.")
+        }
+        val code = rawCode.trim().uppercase()
+        if (code.length < 4) error("Enter a valid invite code")
+        val invite = firestore.collection(COL_INVITES).document(code).get().await()
+        if (!invite.exists()) error("Invite code not found")
+        val householdId = invite.getString("householdId") ?: error("Invalid invite")
+        val householdRef = firestore.collection(COL_HOUSEHOLDS).document(householdId)
+        val household = householdRef.get().await()
+        if (!household.exists()) error("Household no longer exists")
+        @Suppress("UNCHECKED_CAST")
+        val members = (household.get("memberUids") as? List<*>)?.mapNotNull { it as? String }.orEmpty()
+            .toMutableList()
+        if (members.contains(user.uid)) {
+            // Already a member — just restore local link
+        } else {
+            if (members.size >= MAX_HOUSEHOLD_MEMBERS) {
+                error("This household is full (max $MAX_HOUSEHOLD_MEMBERS partners)")
+            }
+            members.add(user.uid)
+            householdRef.set(
+                mapOf(
+                    "memberUids" to members,
+                    "updatedAt" to System.currentTimeMillis(),
+                ),
+                SetOptions.merge(),
+            ).await()
+        }
+        firestore.collection(COL_USERS).document(user.uid).set(
+            mapOf("householdId" to householdId, "updatedAt" to System.currentTimeMillis()),
+            SetOptions.merge(),
+        ).await()
+        householdPreferences.setHouseholdId(householdId)
+        householdPreferences.setInviteCode(household.getString("inviteCode") ?: code)
+        // Merge this device's library up, then pull shared library
+        syncToHousehold(user, householdId)
+        pullHouseholdLibrary()
+        fetchHousehold().getOrThrow()
+    }
+
+    suspend fun leaveHousehold(): Result<Unit> = runCatching {
+        val user = auth.currentUser ?: error("Not signed in")
+        val householdId = resolveHouseholdId(user) ?: return@runCatching
+        val householdRef = firestore.collection(COL_HOUSEHOLDS).document(householdId)
+        val household = householdRef.get().await()
+        if (household.exists()) {
+            @Suppress("UNCHECKED_CAST")
+            val members = (household.get("memberUids") as? List<*>)?.mapNotNull { it as? String }
+                .orEmpty()
+                .filterNot { it == user.uid }
+            if (members.isEmpty()) {
+                // Last member — remove invite index and household
+                household.getString("inviteCode")?.let { code ->
+                    firestore.collection(COL_INVITES).document(code).delete().await()
+                }
+                householdRef.delete().await()
+            } else {
+                householdRef.set(
+                    mapOf(
+                        "memberUids" to members,
+                        "updatedAt" to System.currentTimeMillis(),
+                    ),
+                    SetOptions.merge(),
+                ).await()
+            }
+        }
+        firestore.collection(COL_USERS).document(user.uid).set(
+            mapOf("householdId" to null, "updatedAt" to System.currentTimeMillis()),
+            SetOptions.merge(),
+        ).await()
+        householdPreferences.setHouseholdId(null)
+        householdPreferences.setInviteCode(null)
+    }
+
+    suspend fun regenerateInviteCode(): Result<String> = runCatching {
+        val user = auth.currentUser ?: error("Not signed in")
+        val householdId = resolveHouseholdId(user) ?: error("Not in a household")
+        val householdRef = firestore.collection(COL_HOUSEHOLDS).document(householdId)
+        val household = householdRef.get().await()
+        if (household.getString("createdBy") != user.uid) {
+            error("Only the household creator can regenerate the code")
+        }
+        val oldCode = household.getString("inviteCode")
+        val newCode = generateInviteCode()
+        if (!oldCode.isNullOrBlank()) {
+            firestore.collection(COL_INVITES).document(oldCode).delete().await()
+        }
+        householdRef.set(
+            mapOf("inviteCode" to newCode, "updatedAt" to System.currentTimeMillis()),
+            SetOptions.merge(),
+        ).await()
+        firestore.collection(COL_INVITES).document(newCode).set(
+            mapOf(
+                "householdId" to householdId,
+                "createdBy" to user.uid,
+                "createdAt" to System.currentTimeMillis(),
+            ),
+        ).await()
+        householdPreferences.setInviteCode(newCode)
+        newCode
+    }
+
+    /**
+     * Pull library for this account: household (if linked) or solo `users/{uid}` tree.
+     * Book covers are resolved on-device from Open Library (never from Firebase).
+     */
+    suspend fun pullLibraryFromCloud(): Result<Unit> = runCatching {
+        val user = auth.currentUser ?: return@runCatching
+        val householdId = resolveHouseholdId(user)
+        if (householdId != null) {
+            pullHouseholdLibrary().getOrThrow()
+        } else {
+            pullSoloLibrary(user).getOrThrow()
+        }
+    }
+
+    /** Pull shared readers + books into local Room. */
+    suspend fun pullHouseholdLibrary(): Result<Unit> = runCatching {
+        val user = auth.currentUser ?: return@runCatching
+        val householdId = resolveHouseholdId(user) ?: return@runCatching
+        val readersSnap = firestore.collection(COL_HOUSEHOLDS).document(householdId)
+            .collection(COL_READERS).get().await()
+        val cloudIdToLocalId = importReadersFromDocs(readersSnap.documents)
+
+        val booksSnap = firestore.collection(COL_HOUSEHOLDS).document(householdId)
+            .collection(COL_BOOKS).get().await()
+        importBooksFromDocs(booksSnap.documents, cloudIdToLocalId)
+    }
+
+    /** Pull solo account readers + books (new phone / reinstall). */
+    private suspend fun pullSoloLibrary(user: FirebaseUser): Result<Unit> = runCatching {
+        val kidsSnap = firestore.collection(COL_USERS).document(user.uid)
+            .collection(COL_KIDS).get().await()
+        val cloudIdToLocalId = importReadersFromDocs(kidsSnap.documents)
+
+        val booksSnap = firestore.collection(COL_USERS).document(user.uid)
+            .collection(COL_BOOKS).get().await()
+        importBooksFromDocs(booksSnap.documents, cloudIdToLocalId)
+    }
+
+    private suspend fun importReadersFromDocs(
+        documents: List<com.google.firebase.firestore.DocumentSnapshot>,
+    ): MutableMap<String, Long> {
+        val cloudIdToLocalId = mutableMapOf<String, Long>()
+        for (doc in documents) {
+            val cloudId = doc.getString("cloudId") ?: doc.id
+            val existing = kidProfileRepository.getByCloudId(cloudId)
+            val profile = KidProfile(
+                id = existing?.id ?: 0L,
+                name = doc.getString("name") ?: "Reader",
+                emoji = doc.getString("emoji") ?: "📚",
+                gender = doc.getString("gender") ?: "PREFER_NOT_TO_SAY",
+                dateOfBirth = doc.getLong("dateOfBirth"),
+                favoriteGenre = doc.getString("favoriteGenre").orEmpty(),
+                notes = doc.getString("notes").orEmpty(),
+                profileType = doc.getString("profileType") ?: ReaderProfileType.CHILD.name,
+                cloudId = cloudId,
+                createdAt = doc.getLong("createdAt") ?: System.currentTimeMillis(),
+            )
+            val saved = kidProfileRepository.save(profile)
+            cloudIdToLocalId[cloudId] = saved.id
+            doc.getLong("localId")?.let { cloudIdToLocalId["local:$it"] = saved.id }
+        }
+        return cloudIdToLocalId
+    }
+
+    private suspend fun importBooksFromDocs(
+        documents: List<com.google.firebase.firestore.DocumentSnapshot>,
+        cloudIdToLocalId: Map<String, Long>,
+    ) {
+        for (doc in documents) {
+            val cloudId = doc.getString("cloudId") ?: doc.id
+            val readerCloudId = doc.getString("readerCloudId")
+            val localReaderId = readerCloudId?.let { cloudIdToLocalId[it] }
+                ?: doc.getLong("kidProfileId")?.let { cloudIdToLocalId["local:$it"] }
+                ?: doc.getLong("kidProfileId")
+            val statusName = doc.getString("status") ?: ReadingStatus.WANT_TO_READ.name
+            val isbn = doc.getString("isbn")
+            val title = doc.getString("title") ?: "Untitled"
+            val author = doc.getString("author") ?: "Unknown"
+            // Prefer coverUrl from Firebase; if missing, resolve via Open Library
+            val coverFromCloud = doc.getString("coverUrl")?.takeIf { it.isNotBlank() }
+            val coverUrl = coverFromCloud
+                ?: bookRepository.resolveCoverFromCatalog(
+                    isbn = isbn,
+                    title = title,
+                    author = author,
+                )
+            val book = Book(
+                id = 0,
+                isbn = isbn,
+                title = title,
+                author = author,
+                coverUrl = coverUrl,
+                pageCount = doc.getLong("pageCount")?.toInt(),
+                publishedYear = doc.getString("publishedYear"),
+                description = doc.getString("description"),
+                publisher = doc.getString("publisher"),
+                genre = doc.getString("genre"),
+                kidProfileId = localReaderId,
+                cloudId = cloudId,
+                status = runCatching { ReadingStatus.valueOf(statusName) }
+                    .getOrDefault(ReadingStatus.WANT_TO_READ),
+                rating = doc.getDouble("rating")?.toFloat(),
+                notes = doc.getString("notes").orEmpty(),
+                dateAdded = doc.getLong("dateAdded") ?: System.currentTimeMillis(),
+                dateStarted = doc.getLong("dateStarted"),
+                dateFinished = doc.getLong("dateFinished"),
+                currentPage = doc.getLong("currentPage")?.toInt(),
+            )
+            bookRepository.upsertFromCloud(book)
+        }
     }
 
     suspend fun syncMilestones(snapshot: ReadingSnapshot, milestones: List<Milestone>): Result<Unit> =
@@ -118,7 +438,7 @@ class CloudRepository(
             val user = auth.currentUser ?: return@runCatching
             val unlocked = milestones.filter { it.isUnlocked }.map { it.id }
             val unlockedCount = unlocked.size
-            firestore.collection("users").document(user.uid).set(
+            firestore.collection(COL_USERS).document(user.uid).set(
                 mapOf(
                     "milestonesUnlocked" to unlockedCount,
                     "unlockedMilestoneIds" to unlocked,
@@ -152,7 +472,7 @@ class CloudRepository(
 
     suspend fun fetchProfile(): Result<CloudUserProfile> = runCatching {
         val user = auth.currentUser ?: error("Not signed in")
-        val doc = firestore.collection("users").document(user.uid).get().await()
+        val doc = firestore.collection(COL_USERS).document(user.uid).get().await()
         CloudUserProfile(
             uid = user.uid,
             displayName = doc.getString("displayName") ?: user.displayName ?: "Reader",
@@ -161,87 +481,175 @@ class CloudRepository(
             pagesRead = doc.getLong("pagesRead")?.toInt() ?: 0,
             booksTotal = doc.getLong("booksTotal")?.toInt() ?: 0,
             milestonesUnlocked = doc.getLong("milestonesUnlocked")?.toInt() ?: 0,
+            householdId = doc.getString("householdId") ?: householdPreferences.getHouseholdId(),
         )
     }
 
     suspend fun fetchKidProfiles(): Result<List<CloudKidProfile>> = runCatching {
-        val user = auth.currentUser ?: error("Not signed in")
         val localKids = kidProfileRepository.getAll()
-        val cloudDocs = firestore.collection("users").document(user.uid)
-            .collection("kids").get().await()
         localKids.map { kid ->
-            val doc = cloudDocs.documents.find { it.getLong("localId") == kid.id }
             val books = bookRepository.getBooksForProfile(kid.id)
             val stats = computeStats(books)
             CloudKidProfile(
                 localId = kid.id,
                 name = kid.name,
                 emoji = kid.emoji,
-                booksFinished = doc?.getLong("booksFinished")?.toInt() ?: stats.finished,
-                pagesRead = doc?.getLong("pagesRead")?.toInt() ?: stats.pages,
-                milestonesUnlocked = doc?.getLong("milestonesUnlocked")?.toInt() ?: 0,
+                booksFinished = stats.finished,
+                pagesRead = stats.pages,
+                milestonesUnlocked = 0,
             )
         }
     }
 
-    private suspend fun syncAllProfiles(user: FirebaseUser) {
-        val userRef = firestore.collection("users").document(user.uid)
-        val allBooks = bookRepository.getAllBooks()
-        val batch = firestore.batch()
-        allBooks.forEach { book ->
-            val doc = userRef.collection("books").document(book.id.toString())
-            batch.set(doc, book.toCloudMap(), SetOptions.merge())
-        }
-        val parentBooks = bookRepository.getBooksForProfile(null)
-        val parentStats = computeStats(parentBooks)
-        val parentMilestones = computeMilestones(parentBooks)
-        batch.set(
-            userRef,
-            mapOf(
-                "displayName" to (user.displayName ?: "Reader"),
-                "email" to (user.email ?: ""),
-                "booksFinished" to parentStats.finished,
-                "pagesRead" to parentStats.pages,
-                "booksTotal" to parentBooks.size,
-                "milestonesUnlocked" to parentMilestones.unlockedCount,
-                "unlockedMilestoneIds" to parentMilestones.unlockedIds,
-                "updatedAt" to System.currentTimeMillis(),
-            ),
-            SetOptions.merge(),
-        )
-        batch.commit().await()
-        updateReaderLeaderboard(user.uid, user.displayName ?: "Reader", parentStats.finished, parentStats.pages)
-        syncMilestonesLeaderboard(user.uid, user.displayName ?: "Reader", parentMilestones.unlockedCount)
-
-        val kids = kidProfileRepository.getAll()
-        kids.forEach { kid ->
-            val kidBooks = bookRepository.getBooksForProfile(kid.id)
-            val kidStats = computeStats(kidBooks)
-            val kidMilestones = computeMilestones(kidBooks)
-            userRef.collection("kids").document(kid.id.toString()).set(
-                mapOf(
-                    "localId" to kid.id,
-                    "name" to kid.name,
-                    "emoji" to kid.emoji,
-                    "gender" to kid.gender,
-                    "dateOfBirth" to kid.dateOfBirth,
-                    "favoriteGenre" to kid.favoriteGenre,
-                    "notes" to kid.notes,
-                    "booksFinished" to kidStats.finished,
-                    "pagesRead" to kidStats.pages,
-                    "booksTotal" to kidBooks.size,
-                    "milestonesUnlocked" to kidMilestones.unlockedCount,
-                    "updatedAt" to System.currentTimeMillis(),
-                ),
-                SetOptions.merge(),
-            ).await()
-            syncKidLeaderboard(user.uid, kid, kidBooks)
-            allBooks.filter { it.status == ReadingStatus.FINISHED }.forEach { updateGlobalReadingStats(it) }
+    private suspend fun restoreHouseholdFromUser() {
+        val user = auth.currentUser ?: return
+        val doc = firestore.collection(COL_USERS).document(user.uid).get().await()
+        val householdId = doc.getString("householdId")
+        householdPreferences.setHouseholdId(householdId)
+        if (householdId != null) {
+            val household = firestore.collection(COL_HOUSEHOLDS).document(householdId).get().await()
+            householdPreferences.setInviteCode(household.getString("inviteCode"))
+        } else {
+            householdPreferences.setInviteCode(null)
         }
     }
 
+    private suspend fun resolveHouseholdId(user: FirebaseUser): String? {
+        householdPreferences.getHouseholdId()?.let { return it }
+        val doc = firestore.collection(COL_USERS).document(user.uid).get().await()
+        val id = doc.getString("householdId")
+        if (id != null) householdPreferences.setHouseholdId(id)
+        return id
+    }
+
+    private suspend fun syncToHousehold(user: FirebaseUser, householdId: String) {
+        val readers = kidProfileRepository.getAll()
+        readers.forEach { reader ->
+            val ensured = ensureReaderCloudId(reader)
+            writeHouseholdReader(householdId, ensured)
+            val books = bookRepository.getBooksForProfile(ensured.id)
+            val stats = computeStats(books)
+            // Update stats on reader doc
+            firestore.collection(COL_HOUSEHOLDS).document(householdId)
+                .collection(COL_READERS).document(ensured.cloudId!!).set(
+                    mapOf(
+                        "booksFinished" to stats.finished,
+                        "pagesRead" to stats.pages,
+                        "booksTotal" to books.size,
+                        "updatedAt" to System.currentTimeMillis(),
+                    ),
+                    SetOptions.merge(),
+                ).await()
+            if (ensured.readerType == ReaderProfileType.CHILD) {
+                syncKidLeaderboard(householdId, ensured, books)
+            }
+            books.forEach { book ->
+                val b = ensureBookCloudId(book)
+                firestore.collection(COL_HOUSEHOLDS).document(householdId)
+                    .collection(COL_BOOKS).document(b.cloudId!!)
+                    .set(b.toCloudMap(ensured.cloudId, user.uid), SetOptions.merge())
+                    .await()
+            }
+        }
+        // Account-level summary for the signed-in adult leaderboard
+        val allBooks = bookRepository.getAllBooks()
+        val stats = computeStats(allBooks)
+        firestore.collection(COL_USERS).document(user.uid).set(
+            mapOf(
+                "displayName" to (user.displayName ?: "Reader"),
+                "email" to (user.email ?: ""),
+                "householdId" to householdId,
+                "booksFinished" to stats.finished,
+                "pagesRead" to stats.pages,
+                "booksTotal" to allBooks.size,
+                "updatedAt" to System.currentTimeMillis(),
+            ),
+            SetOptions.merge(),
+        ).await()
+        updateReaderLeaderboard(user.uid, user.displayName ?: "Reader", stats.finished, stats.pages)
+    }
+
+    private suspend fun syncAllProfiles(user: FirebaseUser) {
+        val userRef = firestore.collection(COL_USERS).document(user.uid)
+        val allBooks = bookRepository.getAllBooks()
+        val readers = kidProfileRepository.getAll()
+
+        // Prefer adult profiles for account-level stats; fall back to all books
+        val adultIds = readers.filter { it.isAdult }.map { it.id }.toSet()
+        val accountBooks = if (adultIds.isNotEmpty()) {
+            allBooks.filter { it.kidProfileId in adultIds }
+        } else {
+            allBooks
+        }
+        val accountStats = computeStats(accountBooks)
+        val accountMilestones = computeMilestones(accountBooks)
+        userRef.set(
+            mapOf(
+                "displayName" to (user.displayName ?: "Reader"),
+                "email" to (user.email ?: ""),
+                "booksFinished" to accountStats.finished,
+                "pagesRead" to accountStats.pages,
+                "booksTotal" to accountBooks.size,
+                "milestonesUnlocked" to accountMilestones.unlockedCount,
+                "unlockedMilestoneIds" to accountMilestones.unlockedIds,
+                "updatedAt" to System.currentTimeMillis(),
+            ),
+            SetOptions.merge(),
+        ).await()
+        updateReaderLeaderboard(user.uid, user.displayName ?: "Reader", accountStats.finished, accountStats.pages)
+        syncMilestonesLeaderboard(user.uid, user.displayName ?: "Reader", accountMilestones.unlockedCount)
+
+        readers.forEach { reader ->
+            val ensured = ensureReaderCloudId(reader)
+            val kidBooks = bookRepository.getBooksForProfile(ensured.id)
+            val kidStats = computeStats(kidBooks)
+            val kidMilestones = computeMilestones(kidBooks)
+            writeUserReader(user.uid, ensured, kidStats, kidMilestones, kidBooks.size)
+            kidBooks.forEach { book ->
+                val b = ensureBookCloudId(book)
+                userRef.collection(COL_BOOKS).document(b.cloudId ?: b.id.toString())
+                    .set(b.toCloudMap(ensured.cloudId, user.uid), SetOptions.merge())
+                    .await()
+            }
+            if (ensured.readerType == ReaderProfileType.CHILD) {
+                syncKidLeaderboard(user.uid, ensured, kidBooks)
+            }
+        }
+        allBooks.filter { it.status == ReadingStatus.FINISHED }.forEach { updateGlobalReadingStats(it) }
+    }
+
+    private suspend fun writeHouseholdReader(householdId: String, profile: KidProfile) {
+        val id = profile.cloudId ?: return
+        firestore.collection(COL_HOUSEHOLDS).document(householdId)
+            .collection(COL_READERS).document(id).set(profile.toCloudMap(), SetOptions.merge())
+            .await()
+    }
+
+    private suspend fun writeUserReader(
+        uid: String,
+        profile: KidProfile,
+        stats: Stats? = null,
+        milestones: MilestoneStats? = null,
+        booksTotal: Int = 0,
+    ) {
+        val base = profile.toCloudMap().toMutableMap()
+        if (stats != null) {
+            base["booksFinished"] = stats.finished
+            base["pagesRead"] = stats.pages
+            base["booksTotal"] = booksTotal
+        }
+        if (milestones != null) {
+            base["milestonesUnlocked"] = milestones.unlockedCount
+        }
+        // Keep legacy localId doc id for solo accounts for compatibility
+        firestore.collection(COL_USERS).document(uid)
+            .collection(COL_KIDS).document(profile.id.toString())
+            .set(base, SetOptions.merge())
+            .await()
+    }
+
     private suspend fun ensureUserDocument(user: FirebaseUser, displayName: String) {
-        firestore.collection("users").document(user.uid).set(
+        firestore.collection(COL_USERS).document(user.uid).set(
             mapOf(
                 "displayName" to displayName,
                 "email" to (user.email ?: ""),
@@ -257,14 +665,22 @@ class CloudRepository(
         syncMilestonesLeaderboard(user.uid, displayName, 0)
     }
 
-    private suspend fun syncKidLeaderboard(parentUid: String, kid: KidProfile, books: List<Book>) {
+    private suspend fun ensureBookCloudId(book: Book): Book = bookRepository.ensureCloudId(book)
+
+    private suspend fun ensureReaderCloudId(profile: KidProfile): KidProfile {
+        if (!profile.cloudId.isNullOrBlank()) return profile
+        return kidProfileRepository.save(profile.copy(cloudId = UUID.randomUUID().toString()))
+    }
+
+    private suspend fun syncKidLeaderboard(scopeId: String, kid: KidProfile, books: List<Book>) {
         val stats = computeStats(books)
-        firestore.collection("leaderboard_kids").document(kidLeaderboardId(parentUid, kid.id)).set(
+        firestore.collection("leaderboard_kids").document(kidLeaderboardId(scopeId, kid.id)).set(
             mapOf(
                 "displayName" to kid.name,
                 "emoji" to kid.emoji,
-                "parentUid" to parentUid,
+                "parentUid" to scopeId,
                 "kidProfileId" to kid.id,
+                "profileType" to kid.profileType,
                 "booksFinished" to stats.finished,
                 "pagesRead" to stats.pages,
                 "updatedAt" to System.currentTimeMillis(),
@@ -420,7 +836,14 @@ class CloudRepository(
         )
     }
 
-    private fun kidLeaderboardId(parentUid: String, kidId: Long) = "${parentUid}_kid_$kidId"
+    private fun kidLeaderboardId(scopeId: String, kidId: Long) = "${scopeId}_kid_$kidId"
+
+    private fun generateInviteCode(): String {
+        val alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        return buildString {
+            repeat(6) { append(alphabet[Random.nextInt(alphabet.length)]) }
+        }
+    }
 
     private fun slugify(value: String): String =
         value.lowercase()
@@ -432,14 +855,35 @@ class CloudRepository(
 
     private data class MilestoneStats(val unlockedCount: Int, val unlockedIds: List<String>)
 
-    private fun Book.toCloudMap(): Map<String, Any?> = mapOf(
+    private fun KidProfile.toCloudMap(): Map<String, Any?> = mapOf(
         "localId" to id,
+        "cloudId" to cloudId,
+        "name" to name,
+        "emoji" to emoji,
+        "gender" to gender,
+        "dateOfBirth" to dateOfBirth,
+        "favoriteGenre" to favoriteGenre,
+        "notes" to notes,
+        "profileType" to profileType,
+        "createdAt" to createdAt,
+        "updatedAt" to System.currentTimeMillis(),
+    )
+
+    /**
+     * Book metadata + who read it + cover URL text (not the image file).
+     * Image bytes are still loaded by Coil from the URL / Open Library on each device.
+     */
+    private fun Book.toCloudMap(readerCloudId: String?, editedByUid: String?): Map<String, Any?> = mapOf(
+        "localId" to id,
+        "cloudId" to cloudId,
         "isbn" to isbn,
         "title" to title,
         "author" to author,
         "publisher" to publisher,
         "genre" to genre,
+        "description" to description,
         "kidProfileId" to kidProfileId,
+        "readerCloudId" to readerCloudId,
         "coverUrl" to coverUrl,
         "pageCount" to pageCount,
         "publishedYear" to publishedYear,
@@ -450,6 +894,17 @@ class CloudRepository(
         "dateStarted" to dateStarted,
         "dateFinished" to dateFinished,
         "currentPage" to currentPage,
+        "lastEditedByUid" to editedByUid,
         "updatedAt" to System.currentTimeMillis(),
     )
+
+    companion object {
+        private const val COL_USERS = "users"
+        private const val COL_BOOKS = "books"
+        private const val COL_KIDS = "kids"
+        private const val COL_HOUSEHOLDS = "households"
+        private const val COL_READERS = "readers"
+        private const val COL_INVITES = "household_invites"
+        private const val MAX_HOUSEHOLD_MEMBERS = 2
+    }
 }

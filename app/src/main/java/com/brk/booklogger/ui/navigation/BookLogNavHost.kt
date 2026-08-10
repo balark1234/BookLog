@@ -1,28 +1,32 @@
 package com.brk.booklogger.ui.navigation
 
+import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.Icon
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
-import androidx.activity.ComponentActivity
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -37,27 +41,29 @@ import com.brk.booklogger.BookLogApplication
 import com.brk.booklogger.data.audio.AppSound
 import com.brk.booklogger.data.local.Book
 import com.brk.booklogger.data.local.CompletedBook
-import com.brk.booklogger.ui.components.ActiveReaderSelector
+import com.brk.booklogger.ui.components.AppTopBar
 import com.brk.booklogger.ui.components.ScanHistoryDialog
-import com.brk.booklogger.ui.screens.LogCompletionScreen
-import kotlinx.coroutines.launch
 import com.brk.booklogger.ui.screens.AddBookScreen
 import com.brk.booklogger.ui.screens.BookDetailScreen
-import com.brk.booklogger.ui.screens.LeaderboardScreen
-import com.brk.booklogger.ui.screens.LibraryScreen
-import com.brk.booklogger.ui.screens.ProfileScreen
-import com.brk.booklogger.ui.screens.ScanScreen
 import com.brk.booklogger.ui.screens.KidProfileDetailScreen
 import com.brk.booklogger.ui.screens.KidProfilesScreen
+import com.brk.booklogger.ui.screens.LeaderboardScreen
+import com.brk.booklogger.ui.screens.LibraryScreen
+import com.brk.booklogger.ui.screens.LogCompletionScreen
 import com.brk.booklogger.ui.screens.MilestonesScreen
+import com.brk.booklogger.ui.screens.ReaderHomeScreen
+import com.brk.booklogger.ui.screens.ScanScreen
+import com.brk.booklogger.ui.screens.SettingsDrawerContent
 import com.brk.booklogger.viewmodel.AddBookViewModel
 import com.brk.booklogger.viewmodel.AuthViewModel
 import com.brk.booklogger.viewmodel.BookDetailViewModel
+import com.brk.booklogger.viewmodel.HouseholdViewModel
 import com.brk.booklogger.viewmodel.KidsViewModel
 import com.brk.booklogger.viewmodel.LeaderboardViewModel
 import com.brk.booklogger.viewmodel.LibraryViewModel
 import com.brk.booklogger.viewmodel.LogCompletionViewModel
 import com.brk.booklogger.viewmodel.MilestonesViewModel
+import kotlinx.coroutines.launch
 
 object Routes {
     const val LIBRARY = "library"
@@ -109,34 +115,86 @@ fun BookLogNavHost(
     val tabs = listOf(
         BottomTab(Routes.LIBRARY, "Books", Icons.Default.MenuBook),
         BottomTab(Routes.LEADERBOARD, "Rank", Icons.Default.EmojiEvents),
-        BottomTab(Routes.ACCOUNT, "Me", Icons.Default.Person),
+        BottomTab(Routes.ACCOUNT, "Reader", Icons.Default.Person),
     )
 
     val activity = LocalContext.current as ComponentActivity
+    val scope = rememberCoroutineScope()
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val settingsOpen = drawerState.isOpen
+
+    val kidsFactory = KidsViewModel.Factory(
+        app.kidProfileRepository,
+        app.activeKidPreferences,
+        app.cloudRepository,
+        app.readerBootstrap,
+    )
     val sharedKidsVm: KidsViewModel = viewModel(
         viewModelStoreOwner = activity,
-        factory = KidsViewModel.Factory(
-            app.kidProfileRepository,
-            app.activeKidPreferences,
-            app.cloudRepository,
-        ),
+        factory = kidsFactory,
     )
     val sharedKidsState by sharedKidsVm.uiState.collectAsStateWithLifecycle()
+    val householdVm: HouseholdViewModel = viewModel(
+        viewModelStoreOwner = activity,
+        factory = HouseholdViewModel.Factory(app.cloudRepository),
+    )
     LaunchedEffect(sharedKidsState.kids) {
         sharedKidsVm.ensureDefaultKidFor(sharedKidsState.kids)
     }
+    LaunchedEffect(Unit) {
+        app.pullHouseholdIfLinked()
+    }
+    val activeReaderLabel =
+        sharedKidsState.activeKid?.let { "${it.emoji} ${it.firstName}" } ?: "Reader"
 
+    fun toggleSettingsDrawer() {
+        scope.launch {
+            if (drawerState.isOpen) drawerState.close() else drawerState.open()
+        }
+    }
+
+    fun closeSettingsDrawer() {
+        scope.launch { drawerState.close() }
+    }
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        gesturesEnabled = true,
+        drawerContent = {
+            ModalDrawerSheet {
+                SettingsDrawerContent(
+                    viewModel = authViewModel,
+                    kidsViewModel = sharedKidsVm,
+                    householdViewModel = householdVm,
+                    audioPreferences = app.audioPreferences,
+                    audioManager = app.audioManager,
+                    onLeaderboardClick = {
+                        closeSettingsDrawer()
+                        navController.navigate(Routes.LEADERBOARD) {
+                            popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
+                    onKidProfilesClick = {
+                        closeSettingsDrawer()
+                        navController.navigate(Routes.KID_PROFILES)
+                    },
+                )
+            }
+        },
+    ) {
     Scaffold(
         modifier = modifier,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             if (showBottomBar) {
-                ActiveReaderSelector(
+                AppTopBar(
+                    settingsOpen = settingsOpen,
+                    onToggleSettings = { toggleSettingsDrawer() },
                     kids = sharedKidsState.kids,
                     activeKidId = sharedKidsState.activeKidId,
                     onSelectKid = sharedKidsVm::selectKid,
-                    compact = true,
-                    title = "Reading as",
                 )
             }
         },
@@ -197,7 +255,7 @@ fun BookLogNavHost(
                 LaunchedEffect(sharedKidsState.activeKidId) { vm.refreshActiveKid() }
                 LibraryScreen(
                     viewModel = vm,
-                    activeReaderLabel = sharedKidsState.activeKid?.let { "${it.emoji} ${it.firstName}" } ?: "Parent",
+                    activeReaderLabel = activeReaderLabel,
                     streakInfo = streakInfo,
                     onBookClick = { navController.navigate(Routes.detail(it.id)) },
                     onManualAddClick = { navController.navigate(Routes.ADD) },
@@ -218,39 +276,50 @@ fun BookLogNavHost(
                     viewModel = vm,
                     isSignedIn = authState.user != null,
                     currentUserId = authState.user?.uid,
-                    onSignInClick = {
-                        navController.navigate(Routes.ACCOUNT) {
+                    onSignInClick = { toggleSettingsDrawer() },
+                )
+            }
+            composable(Routes.ACCOUNT) {
+                val libraryVm: LibraryViewModel = viewModel(
+                    factory = LibraryViewModel.Factory(
+                        repository = app.repository,
+                        rewardRepository = app.rewardRepository,
+                        activeKidIdProvider = { app.activeKidPreferences.getActiveKidId() },
+                    ),
+                )
+                val milestonesVm: MilestonesViewModel = viewModel(
+                    factory = MilestonesViewModel.Factory(
+                        app.repository,
+                        app.rewardRepository,
+                        app.activeKidPreferences,
+                        app.milestonePreferences,
+                        app.cloudRepository,
+                    ),
+                )
+                LaunchedEffect(sharedKidsState.activeKidId) {
+                    libraryVm.refreshActiveKid()
+                    milestonesVm.refreshActiveKid()
+                    milestonesVm.refreshScanCount()
+                }
+                val streakInfo by libraryVm.streakInfo.collectAsStateWithLifecycle()
+                ReaderHomeScreen(
+                    kidsViewModel = sharedKidsVm,
+                    libraryViewModel = libraryVm,
+                    milestonesViewModel = milestonesVm,
+                    streakInfo = streakInfo,
+                    onManageReaders = { navController.navigate(Routes.KID_PROFILES) },
+                    onMilestonesClick = { navController.navigate(Routes.MILESTONES) },
+                    onLibraryClick = {
+                        navController.navigate(Routes.LIBRARY) {
                             popUpTo(navController.graph.findStartDestination().id) { saveState = true }
                             launchSingleTop = true
+                            restoreState = true
                         }
                     },
                 )
             }
-            composable(Routes.ACCOUNT) {
-                val kidsVm: KidsViewModel = viewModel(
-                    factory = KidsViewModel.Factory(
-                        app.kidProfileRepository,
-                        app.activeKidPreferences,
-                        app.cloudRepository,
-                    ),
-                )
-                ProfileScreen(
-                    viewModel = authViewModel,
-                    kidsViewModel = kidsVm,
-                    audioPreferences = app.audioPreferences,
-                    audioManager = app.audioManager,
-                    onLeaderboardClick = { navController.navigate(Routes.LEADERBOARD) },
-                    onKidProfilesClick = { navController.navigate(Routes.KID_PROFILES) },
-                )
-            }
             composable(Routes.KID_PROFILES) {
-                val kidsVm: KidsViewModel = viewModel(
-                    factory = KidsViewModel.Factory(
-                        app.kidProfileRepository,
-                        app.activeKidPreferences,
-                        app.cloudRepository,
-                    ),
-                )
+                val kidsVm: KidsViewModel = viewModel(factory = kidsFactory)
                 LaunchedEffect(Unit) { kidsVm.refreshActiveKid() }
                 KidProfilesScreen(
                     viewModel = kidsVm,
@@ -264,13 +333,7 @@ fun BookLogNavHost(
                 arguments = listOf(navArgument("kidId") { type = NavType.LongType }),
             ) { entry ->
                 val kidId = entry.arguments?.getLong("kidId") ?: return@composable
-                val kidsVm: KidsViewModel = viewModel(
-                    factory = KidsViewModel.Factory(
-                        app.kidProfileRepository,
-                        app.activeKidPreferences,
-                        app.cloudRepository,
-                    ),
-                )
+                val kidsVm: KidsViewModel = viewModel(factory = kidsFactory)
                 KidProfileDetailScreen(
                     kidId = kidId,
                     viewModel = kidsVm,
@@ -313,7 +376,7 @@ fun BookLogNavHost(
                     .collectAsStateWithLifecycle()
                 AddBookScreen(
                     viewModel = vm,
-                    activeReaderLabel = sharedKidsState.activeKid?.let { "${it.emoji} ${it.firstName}" } ?: "Parent",
+                    activeReaderLabel = activeReaderLabel,
                     onBack = { navController.popBackStack() },
                     onSaved = { book ->
                         if ((book.pageCount ?: 0) > 0) {
@@ -330,7 +393,7 @@ fun BookLogNavHost(
                 )
             }
             composable(Routes.SCAN) {
-                val scope = rememberCoroutineScope()
+                val scanScope = rememberCoroutineScope()
                 var pendingBook by remember { mutableStateOf<Book?>(null) }
                 var scanHistory by remember { mutableStateOf<List<CompletedBook>>(emptyList()) }
                 var showHistoryDialog by remember { mutableStateOf(false) }
@@ -355,7 +418,7 @@ fun BookLogNavHost(
                 ScanScreen(
                     onBack = { navController.popBackStack() },
                     onIsbnScanned = { isbn ->
-                        scope.launch {
+                        scanScope.launch {
                             app.audioManager.playSound(AppSound.SCAN_SUCCESS)
                             app.recordBookScanned()
                             val kidId = app.activeKidPreferences.getActiveKidId()
@@ -425,7 +488,7 @@ fun BookLogNavHost(
                 )
                 LogCompletionScreen(
                     viewModel = vm,
-                    activeReaderLabel = sharedKidsState.activeKid?.let { "${it.emoji} ${it.firstName}" } ?: "Parent",
+                    activeReaderLabel = activeReaderLabel,
                     onBack = { navController.popBackStack() },
                     onSuccess = { title, rewardCents ->
                         app.audioManager.playSound(AppSound.BOOK_ADDED)
@@ -466,6 +529,7 @@ fun BookLogNavHost(
             }
         }
     }
+    } // ModalNavigationDrawer
 }
 
 private fun NavHostController.navigateToLogCompletion(book: Book) {

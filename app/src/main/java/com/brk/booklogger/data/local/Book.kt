@@ -15,7 +15,10 @@ data class Book(
     val description: String? = null,
     val publisher: String? = null,
     val genre: String? = null,
+    /** Local reader profile id (child or adult). */
     val kidProfileId: Long? = null,
+    /** Stable id for multi-device / partner household sync. */
+    val cloudId: String? = null,
     val status: ReadingStatus = ReadingStatus.WANT_TO_READ,
     val rating: Float? = null,
     val notes: String = "",

@@ -67,4 +67,7 @@ interface RewardTransactionDao {
 
     @Query("SELECT COALESCE(SUM(amountCents), 0) FROM reward_transactions WHERE kidProfileId = :kidId AND direction = 'DEBIT'")
     suspend fun getRedeemedCentsForKid(kidId: Long): Int
+
+    @Query("UPDATE reward_transactions SET kidProfileId = :readerId WHERE kidProfileId IS NULL")
+    suspend fun reassignParentRowsToReader(readerId: Long)
 }

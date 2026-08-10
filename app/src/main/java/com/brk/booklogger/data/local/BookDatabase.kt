@@ -16,7 +16,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         RewardTransaction::class,
         CompletedBook::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = false,
 )
 @TypeConverters(ReadingStatusConverter::class)
@@ -133,6 +133,16 @@ abstract class BookDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE kid_profiles ADD COLUMN profileType TEXT NOT NULL DEFAULT 'CHILD'",
+                )
+                db.execSQL("ALTER TABLE kid_profiles ADD COLUMN cloudId TEXT")
+                db.execSQL("ALTER TABLE books ADD COLUMN cloudId TEXT")
+            }
+        }
+
         @Volatile
         private var instance: BookDatabase? = null
 
@@ -143,7 +153,13 @@ abstract class BookDatabase : RoomDatabase() {
                     BookDatabase::class.java,
                     "booklog.db",
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(
+                        MIGRATION_1_2,
+                        MIGRATION_2_3,
+                        MIGRATION_3_4,
+                        MIGRATION_4_5,
+                        MIGRATION_5_6,
+                    )
                     .build()
                     .also { instance = it }
             }

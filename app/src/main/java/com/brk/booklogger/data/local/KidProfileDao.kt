@@ -19,6 +19,12 @@ interface KidProfileDao {
     @Query("SELECT * FROM kid_profiles WHERE id = :id")
     suspend fun getById(id: Long): KidProfile?
 
+    @Query("SELECT * FROM kid_profiles WHERE cloudId = :cloudId LIMIT 1")
+    suspend fun getByCloudId(cloudId: String): KidProfile?
+
+    @Query("SELECT * FROM kid_profiles WHERE profileType = :profileType ORDER BY createdAt ASC")
+    suspend fun getByType(profileType: String): List<KidProfile>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(profile: KidProfile): Long
 

@@ -17,6 +17,7 @@ import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.HttpException
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 class BookRepository(private val bookDao: BookDao) {
@@ -75,13 +76,71 @@ class BookRepository(private val bookDao: BookDao) {
         else -> bookDao.getBooksForKid(kidProfileId)
     }
     suspend fun saveBook(book: Book): Long {
-        val withCover = book.copy(coverUrl = CoverUrlResolver.bestAvailable(book.isbn, book.coverUrl))
+        val withCover = book.copy(
+            coverUrl = CoverUrlResolver.bestAvailable(book.isbn, book.coverUrl),
+            cloudId = book.cloudId?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString(),
+        )
         val isbn = withCover.isbn?.let { normalizeIsbn(it) }
         if (!isbn.isNullOrBlank()) {
             val existing = findLocalBookByIsbn(isbn, withCover.kidProfileId)
             if (existing != null) return existing.id
         }
         return bookDao.insert(withCover)
+    }
+
+    suspend fun getByCloudId(cloudId: String): Book? = bookDao.getByCloudId(cloudId)
+
+    suspend fun ensureCloudId(book: Book): Book {
+        if (!book.cloudId.isNullOrBlank()) return book
+        val updated = book.copy(cloudId = UUID.randomUUID().toString())
+        if (book.id != 0L) {
+            bookDao.update(updated)
+            return updated
+        }
+        val id = bookDao.insert(updated)
+        return updated.copy(id = id)
+    }
+
+    suspend fun upsertFromCloud(book: Book): Long {
+        // Prefer incoming cover (already resolved from catalog); keep existing local cover if still good
+        val existing = book.cloudId?.let { bookDao.getByCloudId(it) }
+        return if (existing != null) {
+            val cover = book.coverUrl
+                ?: existing.coverUrl
+                ?: CoverUrlResolver.forCloudImport(book.isbn)
+            val merged = book.copy(id = existing.id, coverUrl = cover)
+            bookDao.update(merged)
+            existing.id
+        } else {
+            val cover = book.coverUrl ?: CoverUrlResolver.forCloudImport(book.isbn)
+            bookDao.insert(book.copy(id = 0, coverUrl = cover))
+        }
+    }
+
+    /**
+     * Resolve cover for cloud import / new device without storing images in Firebase.
+     * 1) Open Library ISBN cover URL
+     * 2) Open Library search by title/author → cover id URL
+     */
+    suspend fun resolveCoverFromCatalog(
+        isbn: String?,
+        title: String,
+        author: String,
+    ): String? {
+        CoverUrlResolver.fromIsbn(isbn)?.let { return it }
+        val trimmedTitle = title.trim()
+        if (trimmedTitle.isBlank()) return null
+        return runCatching {
+            val response = api.searchBooks(
+                title = trimmedTitle,
+                author = author.trim().takeIf { it.isNotBlank() && !it.equals("Unknown", ignoreCase = true) },
+                limit = 3,
+            )
+            val doc = response.docs.orEmpty().firstOrNull()
+            val searchIsbn = doc?.isbn?.firstOrNull { it.length in 10..13 }
+            val coverFromId = doc?.cover_i?.let { "https://covers.openlibrary.org/b/id/$it-L.jpg" }
+            CoverUrlResolver.bestAvailable(searchIsbn ?: isbn, coverFromId)
+        }.getOrNull()
     }
 
     suspend fun findLocalBookByIsbn(isbn: String, kidId: Long?): Book? {

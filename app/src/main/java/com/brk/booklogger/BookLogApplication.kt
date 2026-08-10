@@ -11,6 +11,8 @@ import com.brk.booklogger.data.local.BookDatabase
 import com.brk.booklogger.data.milestones.MilestonePreferences
 import com.brk.booklogger.data.profiles.ActiveKidPreferences
 import com.brk.booklogger.data.profiles.GuestPreferences
+import com.brk.booklogger.data.profiles.HouseholdPreferences
+import com.brk.booklogger.data.profiles.ReaderBootstrap
 import com.brk.booklogger.data.repository.BookRepository
 import com.brk.booklogger.data.repository.KidProfileRepository
 import com.brk.booklogger.data.repository.RewardRepository
@@ -40,6 +42,9 @@ class BookLogApplication : Application() {
     lateinit var guestPreferences: GuestPreferences
         private set
 
+    lateinit var householdPreferences: HouseholdPreferences
+        private set
+
     lateinit var rewardRepository: RewardRepository
         private set
 
@@ -50,6 +55,9 @@ class BookLogApplication : Application() {
         private set
 
     lateinit var milestoneCelebrationCoordinator: MilestoneCelebrationCoordinator
+        private set
+
+    lateinit var readerBootstrap: ReaderBootstrap
         private set
 
     override fun onCreate() {
@@ -63,10 +71,19 @@ class BookLogApplication : Application() {
             database.completedBookDao(),
             database.bookDao(),
         )
-        cloudRepository = CloudRepository(repository, kidProfileRepository)
+        householdPreferences = HouseholdPreferences(this)
+        cloudRepository = CloudRepository(repository, kidProfileRepository, householdPreferences)
         milestonePreferences = MilestonePreferences(this)
         activeKidPreferences = ActiveKidPreferences(this)
         guestPreferences = GuestPreferences(this)
+        readerBootstrap = ReaderBootstrap(
+            kidProfileDao = database.kidProfileDao(),
+            bookDao = database.bookDao(),
+            readingDayLogDao = database.readingDayLogDao(),
+            rewardTransactionDao = database.rewardTransactionDao(),
+            completedBookDao = database.completedBookDao(),
+            activeKidPreferences = activeKidPreferences,
+        )
         audioPreferences = AudioPreferences(this)
         audioManager = AppAudioManager(
             context = this,
@@ -79,6 +96,10 @@ class BookLogApplication : Application() {
             milestonePreferences = milestonePreferences,
             audioManager = audioManager,
         )
+        appScope.launch {
+            val name = cloudRepository.currentUser?.displayName
+            readerBootstrap.ensureDefaultAdult(name)
+        }
     }
 
     fun recordBookScanned() {
@@ -95,6 +116,13 @@ class BookLogApplication : Application() {
     fun celebrateMilestonesForActiveProfile() {
         appScope.launch {
             milestoneCelebrationCoordinator.checkAndCelebrate(activeKidPreferences.getActiveKidId())
+        }
+    }
+
+    fun pullHouseholdIfLinked() {
+        if (cloudRepository.currentUser == null) return
+        appScope.launch {
+            cloudRepository.pullLibraryFromCloud()
         }
     }
 }
